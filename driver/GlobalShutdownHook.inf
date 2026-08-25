@@ -1,0 +1,53 @@
+;
+; GlobalShutdownHook.inf
+;
+; Installation INF for the GlobalShutdownHook kernel driver.
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = "System"
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = GlobalShutdownHook.cat
+DriverVer   = 08/25/2026,1.0.0.0
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+GlobalShutdownHook.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceName% = GlobalShutdownHook_Install, GlobalShutdownHook
+
+[GlobalShutdownHook_Install]
+CopyFiles = GlobalShutdownHook_CopyFiles
+
+[GlobalShutdownHook_CopyFiles]
+GlobalShutdownHook.sys
+
+[GlobalShutdownHook_Install.Services]
+AddService = GlobalShutdownHook, %SPSVCINST_ASSOCSERVICE%, GlobalShutdownHook_Service
+
+[GlobalShutdownHook_Service]
+DisplayName   = %ServiceName%
+Description   = %ServiceDescription%
+ServiceType   = 1                  ; SERVICE_KERNEL_DRIVER
+StartType     = 3                  ; SERVICE_DEMAND_START
+ErrorControl  = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary = %12%\GlobalShutdownHook.sys
+
+[Strings]
+ManufacturerName   = "GlobalShutdownHook"
+DiskName           = "GlobalShutdownHook Installation Disk"
+DeviceName         = "GlobalShutdownHook Device"
+ServiceName        = "GlobalShutdownHook"
+ServiceDescription = "Globally intercepts ExitWindowsEx and InitiateSystemShutdownEx via user-mode inline hook"
+SPSVCINST_ASSOCSERVICE = 0x00000002
