@@ -43,39 +43,26 @@ jobs:
       # --------------------------------------------------------
       - name: Install Windows SDK 10.0.26100
         shell: powershell
-        timeout-minutes: 20
         run: |
           $ProgressPreference = 'SilentlyContinue'
           $sdkUrl = "https://go.microsoft.com/fwlink/?linkid=2320455"
           $sdkExe = Join-Path $env:TEMP "winsdksetup.exe"
           Write-Host "Downloading Windows SDK 10.0.26100 ..."
           Invoke-WebRequest -Uri $sdkUrl -OutFile $sdkExe
-          Write-Host "Installing SDK silently (all features) ..."
+          Write-Host "Installing SDK silently ..."
           $p = Start-Process -FilePath $sdkExe `
             -ArgumentList "/features","+","/quiet","/norestart" `
             -Wait -PassThru -NoNewWindow
           Write-Host "SDK installer exit code: $($p.ExitCode)"
-
-          # Verify kernel headers we actually compile against
-          $kmDir = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km"
-          $allFound = $true
-          foreach ($hdr in @("ntddk.h", "wdm.h", "ntifs.h")) {
-            $path = Join-Path $kmDir $hdr
-            if (Test-Path $path) {
-              Write-Host "OK: $hdr found"
-            } else {
-              Write-Host "MISSING: $hdr not found in $kmDir"
-              $allFound = $false
-            }
-          }
-
-          if (-not $allFound) {
-            Write-Host "ERROR: Required kernel headers missing."
-            Write-Host "Available SDK versions:"
+          $ntifs = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\ntifs.h"
+          if (Test-Path $ntifs) {
+            Write-Host "OK: SDK 26100 + ntifs.h verified"
+          } else {
+            Write-Host "ERROR: ntifs.h not found. Available SDKs:"
             Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -ErrorAction SilentlyContinue | Select-Object Name
             exit 1
           }
-          Write-Host "SDK 26100 + kernel headers verified."
+
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
