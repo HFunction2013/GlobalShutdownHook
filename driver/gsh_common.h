@@ -9,7 +9,22 @@
 
 #ifdef _KERNEL_MODE
 #include <wdm.h>
-#include <ntifs.h>
+
+/* ntifs.h redefines PEPROCESS/PETHREAD in some SDK versions (C2371),
+   causing cascading syntax errors. Manually declare the two functions
+   we need instead of including the full ntifs.h header. */
+NTKERNELAPI
+NTSTATUS
+PsLookupProcessByProcessId(
+    _In_ HANDLE ProcessId,
+    _Outptr_ PEPROCESS *Process
+    );
+
+NTKERNELAPI
+PEPROCESS
+PsGetNextProcess(
+    _In_opt_ PEPROCESS Process
+    );
 #else
 #include <windows.h>
 #endif
