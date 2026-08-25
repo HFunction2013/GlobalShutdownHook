@@ -35,97 +35,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
       # --------------------------------------------------------
-      # WDK (Windows Driver Kit) provides kernel-mode headers
-      # (ntddk.h, wdm.h). The windows-latest runner has the
-      # Windows SDK (um headers) but not always the WDK.
-      # Download and install if km headers are missing.
+      # Install Windows SDK 10.0.26100 (includes km headers:
+      # ntddk.h, wdm.h, ntifs.h under Include\10.0.26100.0\km\).
+      # The runner may have a newer SDK but lack this exact
+      # version's km folder; install with all features.
       # --------------------------------------------------------
-      - name: Install Windows Driver Kit (WDK)
-        shell: pwsh
+      - name: Install Windows SDK 10.0.26100
+        shell: powershell
         timeout-minutes: 20
         run: |
-          $sdkPath = "${env:ProgramFiles(x86)}\Windows Kits\10\Include"
-          $wdkFound = $false
+          $ProgressPreference = 'SilentlyContinue'
+          $sdkUrl = "https://go.microsoft.com/fwlink/?linkid=2320455"
+          $sdkExe = Join-Path $env:TEMP "winsdksetup.exe"
+          Write-Host "Downloading Windows SDK 10.0.26100 ..."
+          Invoke-WebRequest -Uri $sdkUrl -OutFile $sdkExe
+          Write-Host "Installing SDK silently (all features) ..."
+          $p = Start-Process -FilePath $sdkExe `
+            -ArgumentList "/features","+","/quiet","/norestart" `
+            -Wait -PassThru -NoNewWindow
+          Write-Host "SDK installer exit code: $($p.ExitCode)"
 
-          # Check if WDK km headers already exist
-          if (Test-Path $sdkPath) {
-            Get-ChildItem $sdkPath -Directory | ForEach-Object {
-              if (Test-Path "$($_.FullName)\km\ntddk.h") {
-                $wdkFound = $true
-                Write-Output "WDK km headers already present: $($_.Name)"
-              }
+          # Verify kernel headers we actually compile against
+          $kmDir = "C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km"
+          $allFound = $true
+          foreach ($hdr in @("ntddk.h", "wdm.h", "ntifs.h")) {
+            $path = Join-Path $kmDir $hdr
+            if (Test-Path $path) {
+              Write-Host "OK: $hdr found"
+            } else {
+              Write-Host "MISSING: $hdr not found in $kmDir"
+              $allFound = $false
             }
           }
 
-          if ($wdkFound) {
-            Write-Output "WDK is installed, skipping download."
-            exit 0
-          }
-
-          Write-Output "WDK km headers not found. Downloading WDK bootstrapper..."
-
-          # Official WDK download redirect (Windows 11 WDK)
-          $wdkUrl = "https://go.microsoft.com/fwlink/?linkid=2196230"
-          $wdkInstaller = Join-Path $env:TEMP "wdksetup.exe"
-
-          try {
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $wdkUrl -OutFile $wdkInstaller -UseBasicParsing -TimeoutSec 180
-          } catch {
-            Write-Output "ERROR: Failed to download WDK: $_"
+          if (-not $allFound) {
+            Write-Host "ERROR: Required kernel headers missing."
+            Write-Host "Available SDK versions:"
+            Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -ErrorAction SilentlyContinue | Select-Object Name
             exit 1
           }
+          Write-Host "SDK 26100 + kernel headers verified."
 
-          if (-not (Test-Path $wdkInstaller)) {
-            Write-Output "ERROR: WDK installer not downloaded"
-            exit 1
-          }
-
-          $fileSize = (Get-Item $wdkInstaller).Length
-          Write-Output "WDK installer downloaded: $fileSize bytes"
-
-          Write-Output "Installing WDK (silent, no restart)..."
-          $proc = Start-Process -FilePath $wdkInstaller `
-            -ArgumentList "/features + /q /norestart" `
-            -Wait -PassThru
-          Write-Output "WDK installer exit code: $($proc.ExitCode)"
-
-          # Give the installer a moment to finalize
-          Start-Sleep -Seconds 8
-
-          # Verify installation
-          $verified = $false
-          if (Test-Path $sdkPath) {
-            Get-ChildItem $sdkPath -Directory | ForEach-Object {
-              $ver = $_.Name
-              if (Test-Path "$($_.FullName)\km\ntddk.h") {
-                $verified = $true
-                Write-Output "VERIFIED: ntddk.h found in $ver\km\"
-              }
-              if (Test-Path "$($_.FullName)\km\wdm.h") {
-                Write-Output "VERIFIED: wdm.h found in $ver\km\"
-              }
-            }
-          }
-
-          if (-not $verified) {
-            Write-Output "ERROR: WDK installation could not be verified."
-            Write-Output "Debug: contents of $sdkPath"
-            if (Test-Path $sdkPath) {
-              Get-ChildItem $sdkPath -Directory | ForEach-Object {
-                Write-Output "  $($_.Name):"
-                Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue |
-                  ForEach-Object { Write-Output "    $($_.Name)" }
-              }
-            }
-            exit 1
-          }
-
-          Write-Output "WDK installation complete."
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
       # --------------------------------------------------------
       # Build the solution
