@@ -9,7 +9,8 @@
  * 支持 64 位原生进程；Wow64 进程做最佳尝试。
  */
 #include "gsh_pe.h"
-#include <ntimage.h>
+/* ntddk.h (via gsh_common.h under _KERNEL_MODE) pulls in winnt.h which
+   defines IMAGE_DOS_HEADER, IMAGE_NT_HEADERS64, IMAGE_EXPORT_DIRECTORY. */
 
 /* ---- 64 位指针大小的结构（内核头文件可能未定义） ---- */
 #ifndef _LIST_ENTRY64_DEFINED

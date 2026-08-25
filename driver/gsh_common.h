@@ -80,7 +80,7 @@ typedef struct _GSH_FAIL_RECORD {
     LARGE_INTEGER Timestamp;
     WCHAR         ProcessName[GSH_PROCESS_NAME_LEN];
     WCHAR         ModuleName[GSH_MODULE_NAME_LEN];
-} GSH_FAIL_RECORD;
+} GSH_FAIL_RECORD, *PGSH_FAIL_RECORD;
 
 typedef struct _GSH_DRIVER_STATUS {
     ULONG TotalProcessesSeen;
@@ -89,7 +89,7 @@ typedef struct _GSH_DRIVER_STATUS {
     ULONG PendingCount;
     ULONG FailLogCount;
     ULONG Reserved[3];
-} GSH_DRIVER_STATUS;
+} GSH_DRIVER_STATUS, *PGSH_DRIVER_STATUS;
 
 typedef struct _GSH_HOOKED_ENTRY {
     ULONG Pid;
@@ -98,7 +98,7 @@ typedef struct _GSH_HOOKED_ENTRY {
     ULONG Reserved;
     WCHAR ProcessName[GSH_PROCESS_NAME_LEN];
     WCHAR ModuleName[GSH_MODULE_NAME_LEN];
-} GSH_HOOKED_ENTRY;
+} GSH_HOOKED_ENTRY, *PGSH_HOOKED_ENTRY;
 
 /* 变长输出：Count 后跟 Count 条记录 */
 typedef struct _GSH_FAIL_LOG_OUTPUT {

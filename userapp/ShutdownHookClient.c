@@ -82,7 +82,7 @@ static void PrintTime(LARGE_INTEGER *li)
 }
 
 /* ---- 打开驱动 ---- */
-static HANDLE OpenDriver(VOID)
+static HANDLE OpenGshDriver(VOID)
 {
     HANDLE h = CreateFileW(
         GSH_WIN32_NAME,
@@ -350,7 +350,7 @@ int main(int argc, char *argv[])
     }
 
     /* 其他命令需要打开驱动 */
-    HANDLE hDriver = OpenDriver();
+    HANDLE hDriver = OpenGshDriver();
     if (hDriver == INVALID_HANDLE_VALUE) {
         return 1;
     }
