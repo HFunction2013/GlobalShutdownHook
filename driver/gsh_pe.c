@@ -106,7 +106,47 @@ typedef struct _IMAGE_NT_HEADERS64 {
     IMAGE_OPTIONAL_HEADER64   OptionalHeader;
 } IMAGE_NT_HEADERS64, *PIMAGE_NT_HEADERS64;
 
-/* IMAGE_OPTIONAL_HEADER32 / IMAGE_NT_HEADERS32 are provided by ntddk.h */
+/* ntddk.h only forward-declares PIMAGE_NT_HEADERS32 (no full struct).
+   Define the structs ourselves, but skip PIMAGE_NT_HEADERS32 typedef
+   to avoid C2371 redefinition conflict. */
+typedef struct _IMAGE_OPTIONAL_HEADER32 {
+    USHORT Magic;
+    UCHAR  MajorLinkerVersion;
+    UCHAR  MinorLinkerVersion;
+    ULONG  SizeOfCode;
+    ULONG  SizeOfInitializedData;
+    ULONG  SizeOfUninitializedData;
+    ULONG  AddressOfEntryPoint;
+    ULONG  BaseOfCode;
+    ULONG  BaseOfData;
+    ULONG  ImageBase;
+    ULONG  SectionAlignment;
+    ULONG  FileAlignment;
+    USHORT MajorOperatingSystemVersion;
+    USHORT MinorOperatingSystemVersion;
+    USHORT MajorImageVersion;
+    USHORT MinorImageVersion;
+    USHORT MajorSubsystemVersion;
+    USHORT MinorSubsystemVersion;
+    ULONG  Win32VersionValue;
+    ULONG  SizeOfImage;
+    ULONG  SizeOfHeaders;
+    ULONG  CheckSum;
+    USHORT Subsystem;
+    USHORT DllCharacteristics;
+    ULONG  SizeOfStackReserve;
+    ULONG  SizeOfStackCommit;
+    ULONG  SizeOfHeapReserve;
+    ULONG  SizeOfHeapCommit;
+    ULONG  LoaderFlags;
+    ULONG  NumberOfRvaAndSizes;
+    IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+} IMAGE_OPTIONAL_HEADER32, *PIMAGE_OPTIONAL_HEADER32;
+typedef struct _IMAGE_NT_HEADERS32 {
+    ULONG                     Signature;
+    IMAGE_FILE_HEADER         FileHeader;
+    IMAGE_OPTIONAL_HEADER32   OptionalHeader;
+} IMAGE_NT_HEADERS32;  /* PIMAGE_NT_HEADERS32 provided by ntddk.h */
 
 typedef struct _IMAGE_EXPORT_DIRECTORY {
     ULONG  Characteristics;
