@@ -30,6 +30,39 @@ PsGetNextProcess(
 #ifndef STATUS_PROTECTION_VIOLATION
 #define STATUS_PROTECTION_VIOLATION  ((NTSTATUS)0xC0000005L)
 #endif
+
+/* KAPC_STATE may not be defined in all SDK wdm.h versions */
+#ifndef _KAPC_STATE_DEFINED
+#define _KAPC_STATE_DEFINED
+typedef struct _KAPC_STATE {
+    LIST_ENTRY ApcListHead[2];
+    PVOID      Process;
+    BOOLEAN    KernelApcInProgress;
+    BOOLEAN    KernelApcPending;
+    BOOLEAN    UserApcPending;
+} KAPC_STATE, *PKAPC_STATE, *PRKAPC_STATE;
+#endif
+
+/* KeStackAttachProcess / KeUnstackDetachProcess may be missing in some SDKs */
+NTKERNELAPI
+VOID
+KeStackAttachProcess(
+    _Inout_ PVOID Process,
+    _Out_   PRKAPC_STATE ApcState
+    );
+
+NTKERNELAPI
+VOID
+KeUnstackDetachProcess(
+    _In_ PRKAPC_STATE ApcState
+    );
+
+/* PsGetProcessImageFileName may be missing in some SDKs */
+NTKERNELAPI
+PCHAR
+PsGetProcessImageFileName(
+    _In_ PEPROCESS Process
+    );
 #else
 #include <windows.h>
 #endif
