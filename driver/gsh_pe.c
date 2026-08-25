@@ -9,7 +9,156 @@
  * 支持 64 位原生进程；Wow64 进程做最佳尝试。
  */
 #include "gsh_pe.h"
-#include <winnt.h>   /* IMAGE_DOS_HEADER, IMAGE_NT_HEADERS64, IMAGE_EXPORT_DIRECTORY */
+/* PE structures: winnt.h is user-mode and conflicts with kernel headers.
+   Manually define the PE types needed for export table parsing. */
+#ifndef IMAGE_DOS_SIGNATURE
+#define IMAGE_DOS_SIGNATURE                 0x5A4D
+#endif
+#ifndef IMAGE_NT_SIGNATURE
+#define IMAGE_NT_SIGNATURE                  0x00004550
+#endif
+#ifndef IMAGE_DIRECTORY_ENTRY_EXPORT
+#define IMAGE_DIRECTORY_ENTRY_EXPORT        0
+#endif
+#ifndef IMAGE_NUMBEROF_DIRECTORY_ENTRIES
+#define IMAGE_NUMBEROF_DIRECTORY_ENTRIES    16
+#endif
+#ifndef IMAGE_NT_OPTIONAL_HDR64_MAGIC
+#define IMAGE_NT_OPTIONAL_HDR64_MAGIC      0x20b
+#endif
+#ifndef IMAGE_NT_OPTIONAL_HDR32_MAGIC
+#define IMAGE_NT_OPTIONAL_HDR32_MAGIC      0x10b
+#endif
+
+typedef struct _IMAGE_DOS_HEADER {
+    USHORT e_magic;
+    USHORT e_cblp;
+    USHORT e_cp;
+    USHORT e_crlc;
+    USHORT e_cparhdr;
+    USHORT e_minalloc;
+    USHORT e_maxalloc;
+    SHORT  e_ss;
+    USHORT e_sp;
+    USHORT e_csum;
+    SHORT  e_ip;
+    SHORT  e_cs;
+    USHORT e_lfarlc;
+    USHORT e_ovno;
+    USHORT e_res[4];
+    USHORT e_oemid;
+    USHORT e_oeminfo;
+    USHORT e_res2[10];
+    LONG   e_lfanew;
+} IMAGE_DOS_HEADER, *PIMAGE_DOS_HEADER;
+
+typedef struct _IMAGE_FILE_HEADER {
+    USHORT Machine;
+    USHORT NumberOfSections;
+    ULONG  TimeDateStamp;
+    ULONG  PointerToSymbolTable;
+    ULONG  NumberOfSymbols;
+    USHORT SizeOfOptionalHeader;
+    USHORT Characteristics;
+} IMAGE_FILE_HEADER, *PIMAGE_FILE_HEADER;
+
+typedef struct _IMAGE_DATA_DIRECTORY {
+    ULONG VirtualAddress;
+    ULONG Size;
+} IMAGE_DATA_DIRECTORY, *PIMAGE_DATA_DIRECTORY;
+
+typedef struct _IMAGE_OPTIONAL_HEADER64 {
+    USHORT    Magic;
+    UCHAR     MajorLinkerVersion;
+    UCHAR     MinorLinkerVersion;
+    ULONG     SizeOfCode;
+    ULONG     SizeOfInitializedData;
+    ULONG     SizeOfUninitializedData;
+    ULONG     AddressOfEntryPoint;
+    ULONG     BaseOfCode;
+    ULONGLONG ImageBase;
+    ULONG     SectionAlignment;
+    ULONG     FileAlignment;
+    USHORT    MajorOperatingSystemVersion;
+    USHORT    MinorOperatingSystemVersion;
+    USHORT    MajorImageVersion;
+    USHORT    MinorImageVersion;
+    USHORT    MajorSubsystemVersion;
+    USHORT    MinorSubsystemVersion;
+    ULONG     Win32VersionValue;
+    ULONG     SizeOfImage;
+    ULONG     SizeOfHeaders;
+    ULONG     CheckSum;
+    USHORT    Subsystem;
+    USHORT    DllCharacteristics;
+    ULONGLONG SizeOfStackReserve;
+    ULONGLONG SizeOfStackCommit;
+    ULONGLONG SizeOfHeapReserve;
+    ULONGLONG SizeOfHeapCommit;
+    ULONG     LoaderFlags;
+    ULONG     NumberOfRvaAndSizes;
+    IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+} IMAGE_OPTIONAL_HEADER64, *PIMAGE_OPTIONAL_HEADER64;
+
+typedef struct _IMAGE_NT_HEADERS64 {
+    ULONG                     Signature;
+    IMAGE_FILE_HEADER         FileHeader;
+    IMAGE_OPTIONAL_HEADER64   OptionalHeader;
+} IMAGE_NT_HEADERS64, *PIMAGE_NT_HEADERS64;
+
+typedef struct _IMAGE_OPTIONAL_HEADER32 {
+    USHORT Magic;
+    UCHAR  MajorLinkerVersion;
+    UCHAR  MinorLinkerVersion;
+    ULONG  SizeOfCode;
+    ULONG  SizeOfInitializedData;
+    ULONG  SizeOfUninitializedData;
+    ULONG  AddressOfEntryPoint;
+    ULONG  BaseOfCode;
+    ULONG  BaseOfData;
+    ULONG  ImageBase;
+    ULONG  SectionAlignment;
+    ULONG  FileAlignment;
+    USHORT MajorOperatingSystemVersion;
+    USHORT MinorOperatingSystemVersion;
+    USHORT MajorImageVersion;
+    USHORT MinorImageVersion;
+    USHORT MajorSubsystemVersion;
+    USHORT MinorSubsystemVersion;
+    ULONG  Win32VersionValue;
+    ULONG  SizeOfImage;
+    ULONG  SizeOfHeaders;
+    ULONG  CheckSum;
+    USHORT Subsystem;
+    USHORT DllCharacteristics;
+    ULONG  SizeOfStackReserve;
+    ULONG  SizeOfStackCommit;
+    ULONG  SizeOfHeapReserve;
+    ULONG  SizeOfHeapCommit;
+    ULONG  LoaderFlags;
+    ULONG  NumberOfRvaAndSizes;
+    IMAGE_DATA_DIRECTORY DataDirectory[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+} IMAGE_OPTIONAL_HEADER32, *PIMAGE_OPTIONAL_HEADER32;
+
+typedef struct _IMAGE_NT_HEADERS32 {
+    ULONG                     Signature;
+    IMAGE_FILE_HEADER         FileHeader;
+    IMAGE_OPTIONAL_HEADER32   OptionalHeader;
+} IMAGE_NT_HEADERS32, *PIMAGE_NT_HEADERS32;
+
+typedef struct _IMAGE_EXPORT_DIRECTORY {
+    ULONG  Characteristics;
+    ULONG  TimeDateStamp;
+    USHORT MajorVersion;
+    USHORT MinorVersion;
+    ULONG  Name;
+    ULONG  Base;
+    ULONG  NumberOfFunctions;
+    ULONG  NumberOfNames;
+    ULONG  AddressOfFunctions;
+    ULONG  AddressOfNames;
+    ULONG  AddressOfNameOrdinals;
+} IMAGE_EXPORT_DIRECTORY, *PIMAGE_EXPORT_DIRECTORY;
 /* LIST_ENTRY64 / UNICODE_STRING64 / LIST_ENTRY32 / UNICODE_STRING32 /
    PROCESS_BASIC_INFORMATION are provided by the Windows SDK (ntdef.h / ntddk.h). */
 

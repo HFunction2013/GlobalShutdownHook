@@ -8,6 +8,7 @@
 #define GSH_COMMON_H
 
 #ifdef _KERNEL_MODE
+#include <ntddk.h>
 #include <wdm.h>
 
 /* ntifs.h redefines PEPROCESS/PETHREAD in some SDK versions (C2371),
@@ -25,6 +26,10 @@ PEPROCESS
 PsGetNextProcess(
     _In_opt_ PEPROCESS Process
     );
+/* STATUS_PROTECTION_VIOLATION may not exist in all SDK versions. */
+#ifndef STATUS_PROTECTION_VIOLATION
+#define STATUS_PROTECTION_VIOLATION  ((NTSTATUS)0xC0000005L)
+#endif
 #else
 #include <windows.h>
 #endif
