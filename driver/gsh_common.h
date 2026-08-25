@@ -8,7 +8,8 @@
 #define GSH_COMMON_H
 
 #ifdef _KERNEL_MODE
-#include <ntddk.h>
+#include <wdm.h>
+#include <ntifs.h>
 #else
 #include <windows.h>
 #endif

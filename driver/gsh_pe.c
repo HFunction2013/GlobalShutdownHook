@@ -9,26 +9,9 @@
  * 支持 64 位原生进程；Wow64 进程做最佳尝试。
  */
 #include "gsh_pe.h"
-/* ntddk.h (via gsh_common.h under _KERNEL_MODE) pulls in winnt.h which
-   defines IMAGE_DOS_HEADER, IMAGE_NT_HEADERS64, IMAGE_EXPORT_DIRECTORY. */
-
-/* ---- 64 位指针大小的结构（内核头文件可能未定义） ---- */
-#ifndef _LIST_ENTRY64_DEFINED
-#define _LIST_ENTRY64_DEFINED
-typedef struct _LIST_ENTRY64 {
-    ULONG64 Flink;
-    ULONG64 Blink;
-} LIST_ENTRY64;
-#endif
-
-#ifndef _UNICODE_STRING64_DEFINED
-#define _UNICODE_STRING64_DEFINED
-typedef struct _UNICODE_STRING64 {
-    USHORT Length;
-    USHORT MaximumLength;
-    ULONG64 Buffer;
-} UNICODE_STRING64;
-#endif
+#include <winnt.h>   /* IMAGE_DOS_HEADER, IMAGE_NT_HEADERS64, IMAGE_EXPORT_DIRECTORY */
+/* LIST_ENTRY64 / UNICODE_STRING64 / LIST_ENTRY32 / UNICODE_STRING32 /
+   PROCESS_BASIC_INFORMATION are provided by the Windows SDK (ntdef.h / ntddk.h). */
 
 /* ---- 未文档化/需手动声明的 API ---- */
 NTSYSAPI
@@ -41,15 +24,6 @@ ZwQueryInformationProcess(
     _In_ ULONG ProcessInformationLength,
     _Out_opt_ PULONG ReturnLength
 );
-
-typedef struct _PROCESS_BASIC_INFORMATION {
-    NTSTATUS ExitStatus;
-    PVOID PebBaseAddress;
-    ULONG_PTR AffinityMask;
-    KPRIORITY BasePriority;
-    ULONG_PTR UniqueProcessId;
-    ULONG_PTR InheritedFromUniqueProcessId;
-} PROCESS_BASIC_INFORMATION;
 
 #define ProcessWow64Information 26
 
@@ -89,17 +63,6 @@ typedef struct _LDR_DATA_TABLE_ENTRY64 {
 } LDR_DATA_TABLE_ENTRY64, *PLDR_DATA_TABLE_ENTRY64;
 
 /* ---- 32 位 PEB / LDR 结构（用于 Wow64） ---- */
-typedef struct _UNICODE_STRING32 {
-    USHORT Length;
-    USHORT MaximumLength;
-    ULONG Buffer;
-} UNICODE_STRING32;
-
-typedef struct _LIST_ENTRY32 {
-    ULONG Flink;
-    ULONG Blink;
-} LIST_ENTRY32;
-
 typedef struct _PEB32 {
     UCHAR InheritedAddressSpace;
     UCHAR ReadImageFileExecOptions;
