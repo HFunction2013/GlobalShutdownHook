@@ -11,6 +11,18 @@
 #include "gsh_hook.h"
 #include "gsh_state.h"
 
+/* PsGetNextProcess is not in WDK 26100 import library; resolve at runtime. */
+typedef PEPROCESS (*PFN_PsGetNextProcess)(_In_opt_ PEPROCESS Process);
+static PFN_PsGetNextProcess g_pfnPsGetNextProcess = NULL;
+static BOOLEAN g_bPsGetNextProcessTried = FALSE;
+
+static PFN_PsGetNextProcess ResolvePsGetNextProcess(void)
+{
+    UNICODE_STRING funcName;
+    RtlInitUnicodeString(&funcName, L"PsGetNextProcess");
+    return (PFN_PsGetNextProcess)MmGetSystemRoutineAddress(&funcName);
+}
+
 /* ---- 判断路径是否以指定文件名结尾（不区分大小写） ---- */
 static BOOLEAN PathEndsWith(PCUNICODE_STRING Path, PCWSTR FileName)
 {
@@ -77,8 +89,18 @@ VOID NotifyEnumerateProcesses(VOID)
     PEPROCESS process = NULL;
     ULONG count = 0;
 
+    /* Resolve PsGetNextProcess at runtime (not in WDK 26100 import lib) */
+    if (!g_bPsGetNextProcessTried) {
+        g_pfnPsGetNextProcess = ResolvePsGetNextProcess();
+        g_bPsGetNextProcessTried = TRUE;
+    }
+    if (!g_pfnPsGetNextProcess) {
+        DbgPrint("GSH: PsGetNextProcess not available, skipping enumeration\n");
+        return;
+    }
+
     /* 遍历所有进程（从 System 进程开始） */
-    process = PsGetNextProcess(NULL);
+    process = g_pfnPsGetNextProcess(NULL);
     while (process) {
         HANDLE pid = PsGetProcessId(process);
         ULONG_PTR exitStatus = PsGetProcessExitStatus(process);
@@ -100,7 +122,7 @@ VOID NotifyEnumerateProcesses(VOID)
             count++;
         }
 
-        PEPROCESS next = PsGetNextProcess(process);
+        PEPROCESS next = g_pfnPsGetNextProcess(process);
         ObDereferenceObject(process);
         process = next;
     }
