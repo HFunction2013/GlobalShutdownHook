@@ -1,1 +1,73 @@
+# ============================================================
+#  GlobalShutdownHook - .gitignore
+# ============================================================
+
+# ---- Build output directories ----
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+# ---- Visual Studio / WDK ----
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.aps
+*.ncb
+
+# ---- Compiled / generated artifacts ----
+*.sys
+*.exe
+*.dll
+*.pdb
+*.map
+*.exp
+*.lib
+*.cat
+*.cer
+*.bin
+*.dump
+
+# ---- Logs & temp ----
+*.log
+DbgView*.txt
+*.tmp
+*.temp
+*.dmp
+*.mdmp
+
+# ---- Windows OS ----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- macOS ----
 .DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+
+# ---- Linux / editor swap ----
+*~
+*.swp
+*.swo
+*.swn
+*.bak
+*.orig
+
+# ---- QEMU / VM artifacts ----
+*.qcow2
+*.qcow
+*.vdi
+*.vmdk
+*.vhd
+*.vhdx
+OVMF_VARS.fd
+shared/
