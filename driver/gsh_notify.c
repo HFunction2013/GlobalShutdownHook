@@ -11,17 +11,36 @@
 #include "gsh_hook.h"
 #include "gsh_state.h"
 
-/* PsGetNextProcess is not in WDK 26100 import library; resolve at runtime. */
-typedef PEPROCESS (*PFN_PsGetNextProcess)(_In_opt_ PEPROCESS Process);
-static PFN_PsGetNextProcess g_pfnPsGetNextProcess = NULL;
-static BOOLEAN g_bPsGetNextProcessTried = FALSE;
+/* ---- ZwQuerySystemInformation (documented, zero DKOM) ---- */
+NTSYSAPI
+NTSTATUS
+NTAPI
+ZwQuerySystemInformation(
+    _In_ ULONG SystemInformationClass,
+    _Out_writes_bytes_opt_(SystemInformationLength) PVOID SystemInformation,
+    _In_ ULONG SystemInformationLength,
+    _Out_opt_ PULONG ReturnLength
+    );
+#define SystemProcessInformation 5
 
-static PFN_PsGetNextProcess ResolvePsGetNextProcess(void)
-{
-    UNICODE_STRING funcName;
-    RtlInitUnicodeString(&funcName, L"PsGetNextProcess");
-    return (PFN_PsGetNextProcess)MmGetSystemRoutineAddress(&funcName);
-}
+/* Minimal SYSTEM_PROCESS_INFORMATION: only fields we need.
+   Layout stable on x64 since Windows XP:
+     0x00 NextEntryOffset (ULONG)
+     0x04 NumberOfThreads (ULONG)
+     0x08 Reserved[48]
+     0x38 ImageName (UNICODE_STRING, 16 bytes on x64)
+     0x48 BasePriority (LONG)
+     0x4C padding (4 bytes for HANDLE alignment)
+     0x50 UniqueProcessId (HANDLE) */
+typedef struct _SYSTEM_PROCESS_INFORMATION_MIN {
+    ULONG          NextEntryOffset;
+    ULONG          NumberOfThreads;
+    UCHAR          Reserved1[48];
+    UNICODE_STRING ImageName;
+    LONG           BasePriority;
+    ULONG          Reserved2;  /* padding for HANDLE alignment */
+    HANDLE         UniqueProcessId;
+} SYSTEM_PROCESS_INFORMATION_MIN, *PSYSTEM_PROCESS_INFORMATION_MIN;
 
 /* ---- 判断路径是否以指定文件名结尾（不区分大小写） ---- */
 static BOOLEAN PathEndsWith(PCUNICODE_STRING Path, PCWSTR FileName)
@@ -83,49 +102,86 @@ VOID NotifyUnregister(VOID)
     PsRemoveLoadImageNotifyRoutine(NotifyImageLoad);
 }
 
-/* ---- 枚举所有现存进程 ---- */
+/* ---- 枚举所有现存进程（双路：ZwQuerySystemInformation + PID 暴力扫描） ----
+ *
+ * 为什么双路：
+ *   ZwQuerySystemInformation 内部遍历 PsActiveProcessHead（EPROCESS 链表），
+ *   经典 DKOM 隐藏就是从这个链表摘除 EPROCESS 节点 → 会漏。
+ *   PsLookupProcessByProcessId 走 CID 哈希表，被 DKOM 摘除链表的进程
+ *   其 PID 仍在 CID 表中（否则进程无法被系统调度/查找）→ 能找到。
+ *   两路合并去重，宁可慢也要找全。
+ */
+#define GSH_PID_SCAN_MAX  0x40000   /* 扫描 PID 上限：262144 */
+#define GSH_PID_SCAN_STEP 4          /* PID 总是 4 的倍数 */
+
+static VOID EnqueueProcess(HANDLE Pid)
+{
+    /* 立即创建 PENDING 状态条目（去重由 StateFindOrCreate 保证） */
+    StateFindOrCreate(Pid, L"user32.dll", FUNC_EXIT_WINDOWS_EX);
+    StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A);
+    StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W);
+    /* 入队由 Worker 实际执行 hook */
+    WorkerEnqueue(Pid, L"user32.dll", FUNC_EXIT_WINDOWS_EX);
+    WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A);
+    WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W);
+}
+
 VOID NotifyEnumerateProcesses(VOID)
 {
-    PEPROCESS process = NULL;
+    NTSTATUS status;
+    ULONG bufSize = 0;
+    PVOID buffer = NULL;
     ULONG count = 0;
+    ULONG hiddenCount = 0;
 
-    /* Resolve PsGetNextProcess at runtime (not in WDK 26100 import lib) */
-    if (!g_bPsGetNextProcessTried) {
-        g_pfnPsGetNextProcess = ResolvePsGetNextProcess();
-        g_bPsGetNextProcessTried = TRUE;
-    }
-    if (!g_pfnPsGetNextProcess) {
-        DbgPrint("GSH: PsGetNextProcess not available, skipping enumeration\n");
-        return;
-    }
-
-    /* 遍历所有进程（从 System 进程开始） */
-    process = g_pfnPsGetNextProcess(NULL);
-    while (process) {
-        HANDLE pid = PsGetProcessId(process);
-        ULONG_PTR exitStatus = PsGetProcessExitStatus(process);
-
-        /* 跳过已终止进程和 System 空闲进程（PID 0/4 通常不加载 user32） */
-        if (pid != 0 && exitStatus == STATUS_PENDING) {
-            /*
-             * 不在这里 attach 检查模块，原因：
-             * 1. DriverEntry 中遍历大量进程 + attach 会拖慢启动
-             * 2. 由 Worker 线程统一处理，它会 attach 并检查模块是否加载
-             * 3. 模块未加载时 Worker 直接返回，不记录失败
-             *
-             * 对每个进程同时入队 user32 和 advapi32 的检查。
-             * 实际是否 hook 由 Worker 决定。
-             */
-            WorkerEnqueue(pid, L"user32.dll", FUNC_EXIT_WINDOWS_EX);
-            WorkerEnqueue(pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A);
-            WorkerEnqueue(pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W);
-            count++;
+    /* ====== 第一路：ZwQuerySystemInformation（快速，拿可见进程） ====== */
+    status = ZwQuerySystemInformation(SystemProcessInformation, NULL, 0, &bufSize);
+    if (status == STATUS_INFO_LENGTH_MISMATCH && bufSize > 0) {
+        bufSize += 4096;
+        buffer = ExAllocatePoolWithTag(PagedPool, bufSize, 'QSyG');
+        if (buffer) {
+            ULONG retLen = 0;
+            status = ZwQuerySystemInformation(SystemProcessInformation, buffer, bufSize, &retLen);
+            if (NT_SUCCESS(status)) {
+                PSYSTEM_PROCESS_INFORMATION_MIN proc =
+                    (PSYSTEM_PROCESS_INFORMATION_MIN)buffer;
+                while (TRUE) {
+                    HANDLE pid = proc->UniqueProcessId;
+                    if (pid != 0) {
+                        EnqueueProcess(pid);
+                        count++;
+                    }
+                    if (proc->NextEntryOffset == 0) break;
+                    proc = (PSYSTEM_PROCESS_INFORMATION_MIN)
+                        ((PUCHAR)proc + proc->NextEntryOffset);
+                }
+            }
+            ExFreePoolWithTag(buffer, 'QSyG');
         }
-
-        PEPROCESS next = g_pfnPsGetNextProcess(process);
-        ObDereferenceObject(process);
-        process = next;
     }
+    DbgPrint("GSH: ZwQuerySystemInformation found %u processes\n", count);
 
-    DbgPrint("GSH: Enumerated %u processes, enqueued for module check\n", count);
+    /* ====== 第二路：PID 暴力扫描（走 CID 表，拿被 DKOM 隐藏的进程） ======
+     * 扫描 0..GSH_PID_SCAN_MAX，步长 4（Windows PID 总是 4 的倍数）。
+     * PsLookupProcessByProcessId 成功 → 进程存在（即使不在 EPROCESS 链表中）。
+     * StateFindOrCreate 自动去重，已处理的 PID 不会重复入队。
+     */
+    ULONG pidVal;
+    for (pidVal = 4; pidVal < GSH_PID_SCAN_MAX; pidVal += GSH_PID_SCAN_STEP) {
+        PEPROCESS proc = NULL;
+        status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pidVal, &proc);
+        if (NT_SUCCESS(status)) {
+            /* 检查进程是否已终止 */
+            if (PsGetProcessExitStatus(proc) == STATUS_PENDING) {
+                /* 只统计不在第一路中的（通过 StateFind 去重判断） */
+                if (StateFind((HANDLE)(ULONG_PTR)pidVal, FUNC_EXIT_WINDOWS_EX) == NULL) {
+                    EnqueueProcess((HANDLE)(ULONG_PTR)pidVal);
+                    hiddenCount++;
+                }
+            }
+            ObDereferenceObject(proc);
+        }
+    }
+    DbgPrint("GSH: PID brute-force scan found %u hidden processes (DKOM?)\n", hiddenCount);
+    DbgPrint("GSH: Total processes enumerated: %u\n", count + hiddenCount);
 }

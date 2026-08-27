@@ -21,11 +21,6 @@ PsLookupProcessByProcessId(
     _Outptr_ PEPROCESS *Process
     );
 
-NTKERNELAPI
-PEPROCESS
-PsGetNextProcess(
-    _In_opt_ PEPROCESS Process
-    );
 /* STATUS_PROTECTION_VIOLATION may not exist in all SDK versions. */
 #ifndef STATUS_PROTECTION_VIOLATION
 #define STATUS_PROTECTION_VIOLATION  ((NTSTATUS)0xC0000005L)
