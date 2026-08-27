@@ -25,4 +25,6 @@ VOID     WorkerEnqueue(HANDLE Pid, PCWSTR ModuleName, ULONG FunctionId);
 /* 工作线程主循环（内部使用） */
 VOID     WorkerThreadRoutine(PVOID Context);
 
+/* 查询当前队列中的待处理任务（返回条目数） */
+ULONG    WorkerGetQueue(PGSH_QUEUE_ENTRY Buffer, ULONG MaxCount);
 #endif /* GSH_WORKER_H */
