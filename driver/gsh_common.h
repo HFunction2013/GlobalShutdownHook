@@ -89,6 +89,8 @@ PsGetProcessImageFileName(
 
 #define IOCTL_GSH_GET_HOOKED_LIST \
     CTL_CODE(FILE_DEVICE_UNKNOWN, GSH_IOCTL_BASE + 4, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_GSH_GET_QUEUE \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, GSH_IOCTL_BASE + 5, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 /* ---- 目标函数 ID ---- */
 #define FUNC_EXIT_WINDOWS_EX                0
@@ -164,6 +166,18 @@ typedef struct _GSH_HOOKED_LIST_OUTPUT {
     ULONG Count;
     GSH_HOOKED_ENTRY Entries[1];
 } GSH_HOOKED_LIST_OUTPUT;
+
+/* 工作队列条目（待处理的 hook 任务） */
+typedef struct _GSH_QUEUE_ENTRY {
+    ULONG Pid;
+    ULONG FunctionId;
+    WCHAR ModuleName[GSH_MODULE_NAME_LEN];
+} GSH_QUEUE_ENTRY, *PGSH_QUEUE_ENTRY;
+
+typedef struct _GSH_QUEUE_OUTPUT {
+    ULONG Count;
+    GSH_QUEUE_ENTRY Entries[1];
+} GSH_QUEUE_OUTPUT;
 
 #pragma pack(pop)
 

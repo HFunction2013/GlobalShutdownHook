@@ -21,6 +21,7 @@ static NTSTATUS GshIoctlGetFailLog(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlClearFailLog(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlUnhookAll(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlGetHookedList(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 
 /* ---- 驱动入口 ---- */
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
@@ -166,6 +167,9 @@ NTSTATUS GshDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         case IOCTL_GSH_GET_HOOKED_LIST:
             status = GshIoctlGetHookedList(Irp, irpSp);
             break;
+        case IOCTL_GSH_GET_QUEUE:
+            status = GshIoctlGetQueue(Irp, irpSp);
+            break;
         default:
             status = STATUS_INVALID_DEVICE_REQUEST;
             break;
@@ -290,5 +294,27 @@ static NTSTATUS GshIoctlGetHookedList(PIRP Irp, PIO_STACK_LOCATION IrpSp)
 
     *(PULONG)buffer = ctx.Count;
     Irp->IoStatus.Information = sizeof(ULONG) + ctx.Count * sizeof(GSH_HOOKED_ENTRY);
+    return STATUS_SUCCESS;
+}
+
+
+/* ---- IOCTL: 获取工作队列中待处理任务 ---- */
+static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    ULONG outLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+    if (outLen < sizeof(ULONG)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    PUCHAR buffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+    ULONG maxEntries = (outLen - sizeof(ULONG)) / sizeof(GSH_QUEUE_ENTRY);
+    if (maxEntries == 0) {
+        *(PULONG)buffer = 0;
+        Irp->IoStatus.Information = sizeof(ULONG);
+        return STATUS_SUCCESS;
+    }
+    ULONG count = WorkerGetQueue((PGSH_QUEUE_ENTRY)(buffer + sizeof(ULONG)), maxEntries);
+    *(PULONG)buffer = count;
+    Irp->IoStatus.Information = sizeof(ULONG) + count * sizeof(GSH_QUEUE_ENTRY);
     return STATUS_SUCCESS;
 }

@@ -164,3 +164,24 @@ VOID WorkerThreadRoutine(PVOID Context)
 
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
+
+
+/* ---- 查询当前工作队列 ---- */
+ULONG WorkerGetQueue(PGSH_QUEUE_ENTRY Buffer, ULONG MaxCount)
+{
+    ULONG count = 0;
+    KIRQL irql;
+    if (!Buffer || MaxCount == 0) return 0;
+    KeAcquireSpinLock(&g_WorkQueueLock, &irql);
+    PLIST_ENTRY entry = g_WorkQueue.Flink;
+    while (entry != &g_WorkQueue && count < MaxCount) {
+        PGSH_WORK_ITEM item = CONTAINING_RECORD(entry, GSH_WORK_ITEM, ListEntry);
+        Buffer[count].Pid = PtrToUint(item->Pid);
+        Buffer[count].FunctionId = item->FunctionId;
+        RtlCopyMemory(Buffer[count].ModuleName, item->ModuleName, sizeof(Buffer[count].ModuleName));
+        count++;
+        entry = entry->Flink;
+    }
+    KeReleaseSpinLock(&g_WorkQueueLock, irql);
+    return count;
+}

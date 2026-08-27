@@ -310,6 +310,44 @@ static int CmdMonitor(HANDLE hDriver, int intervalSec)
     return 0;
 }
 
+static int CmdQueue(HANDLE hDriver, int intervalSec)
+{
+    if (intervalSec <= 0) intervalSec = 1;
+    printf("GSH Work Queue (refresh every %ds). Press Ctrl+C to stop.\n\n", intervalSec);
+    while (1) {
+        BYTE buffer[65536];
+        DWORD bytesReturned = 0;
+        if (!DeviceIoControl(hDriver, IOCTL_GSH_GET_QUEUE,
+                             NULL, 0, buffer, sizeof(buffer),
+                             &bytesReturned, NULL)) {
+            printf("\rIOCTL_GET_QUEUE failed: %lu          ", GetLastError());
+            fflush(stdout);
+            Sleep(intervalSec * 1000);
+            continue;
+        }
+        ULONG count = *(PULONG)buffer;
+        PGSH_QUEUE_ENTRY entries = (PGSH_QUEUE_ENTRY)(buffer + sizeof(ULONG));
+        system("cls");
+        printf("=== GSH Work Queue: %lu pending task(s) ===\n", count);
+        if (count == 0) {
+            printf("  (queue empty)\n");
+        } else {
+            printf("%-8s %-32s %s\n", "PID", "Function", "Module");
+            printf("----------------------------------------------------------------\n");
+            for (ULONG i = 0; i < count; i++) {
+                printf("%-8lu %-32s %ls\n",
+                       entries[i].Pid,
+                       FunctionIdToString(entries[i].FunctionId),
+                       entries[i].ModuleName[0] ? entries[i].ModuleName : L"-");
+            }
+        }
+        printf("\n(refresh every %ds, Ctrl+C to stop)\n", intervalSec);
+        fflush(stdout);
+        Sleep(intervalSec * 1000);
+    }
+    return 0;
+}
+
 static void PrintHelp(const char *progName)
 {
     printf("GlobalShutdownHook Client\n\n");
@@ -370,6 +408,9 @@ int main(int argc, char *argv[])
     } else if (strcmp(cmd, "monitor") == 0) {
         int interval = (argc >= 3) ? atoi(argv[2]) : 2;
         ret = CmdMonitor(hDriver, interval);
+    } else if (strcmp(cmd, "queue") == 0) {
+        int interval = (argc >= 3) ? atoi(argv[2]) : 1;
+        ret = CmdQueue(hDriver, interval);
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         PrintHelp(argv[0]);
