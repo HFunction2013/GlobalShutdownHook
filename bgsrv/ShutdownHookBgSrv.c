@@ -28,7 +28,7 @@ static ULONG     g_lastLockState = 0xFFFFFFFF;  /* 初始为无效值，确保�
 static HANDLE    g_hDriver = INVALID_HANDLE_VALUE;
 
 /* ---- 打开驱动 ---- */
-static BOOL OpenDriver(VOID)
+static BOOL OpenGshDriver(VOID)
 {
     if (g_hDriver != INVALID_HANDLE_VALUE) return TRUE;
     g_hDriver = CreateFileW(
@@ -42,7 +42,7 @@ static BOOL OpenDriver(VOID)
 /* ---- 查询锁状态 ---- */
 static BOOL QueryLockState(PULONG state, PULONG passwordSet)
 {
-    if (!OpenDriver()) return FALSE;
+    if (!OpenGshDriver()) return FALSE;
     GSH_LOCK_STATUS status;
     DWORD bytesReturned = 0;
     if (!DeviceIoControl(g_hDriver, IOCTL_GSH_QUERY_LOCK_STATUS,

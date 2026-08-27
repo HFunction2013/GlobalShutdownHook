@@ -375,6 +375,15 @@ static void PrintHelp(const char *progName)
 }
 
 /* ---- main ---- */
+/* 新命令前向声明（定义在文件末尾） */
+static int CmdLock(HANDLE hDriver);
+static int CmdUnlock(HANDLE hDriver);
+static int CmdSetPass(HANDLE hDriver);
+static int CmdRmPass(HANDLE hDriver);
+static int CmdShutdownNow(HANDLE hDriver);
+static int CmdQueryStatus(HANDLE hDriver);
+static int CmdInit(VOID);
+
 int main(int argc, char *argv[])
 {
     if (argc < 2) {

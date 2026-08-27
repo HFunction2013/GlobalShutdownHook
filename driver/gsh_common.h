@@ -193,6 +193,22 @@ typedef struct _GSH_QUEUE_OUTPUT {
     GSH_QUEUE_ENTRY Entries[1];
 } GSH_QUEUE_OUTPUT;
 
+/* 密码输入：旧密码 + 新密码（set_pass 用；rm_pass 只用 OldPassword） */
+typedef struct _GSH_PASSWORD_INPUT {
+    WCHAR OldPassword[GSH_MAX_PASS_LEN];
+    WCHAR NewPassword[GSH_MAX_PASS_LEN];
+} GSH_PASSWORD_INPUT, *PGSH_PASSWORD_INPUT;
+
+/* 锁状态查询输出 */
+typedef struct _GSH_LOCK_STATUS {
+    ULONG LockState;       /* GSH_LOCKED / GSH_UNLOCKED */
+    ULONG PasswordSet;     /* 1 = 密码已设置, 0 = 无密码 */
+    ULONG HookedCount;
+    ULONG FailedCount;
+    ULONG PendingCount;
+    ULONG Reserved[3];
+} GSH_LOCK_STATUS, *PGSH_LOCK_STATUS;
+
 #pragma pack(pop)
 
 #endif /* GSH_COMMON_H */
