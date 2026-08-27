@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <conio.h>
 
 #include "../driver/gsh_common.h"
 
@@ -361,6 +362,14 @@ static void PrintHelp(const char *progName)
     printf("  test                Call ExitWindowsEx to test interception\n");
     printf("  test-advapi         Call InitiateSystemShutdownEx to test\n");
     printf("  monitor [sec]       Continuously monitor status (default 2s)\n");
+    printf("  queue [sec]         Show work queue, dynamic refresh (default 1s)\n");
+    printf("  lock                Lock driver (block shutdown, no password)\n");
+    printf("  unlock              Unlock driver (allow shutdown, needs password)\n");
+    printf("  set_pass            Set or change password\n");
+    printf("  rm_pass             Remove password (no protection after)\n");
+    printf("  shutdown_now        Force immediate shutdown (needs unlock + password)\n");
+    printf("  query_status        Show lock state and stats (no password)\n");
+    printf("  init                Load driver via GDRVLoader + start background service\n");
     printf("  help                Show this help\n");
     printf("\nNote: Run as Administrator for full functionality.\n");
 }
@@ -385,6 +394,9 @@ int main(int argc, char *argv[])
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "--help") == 0) {
         PrintHelp(argv[0]);
         return 0;
+    }
+    if (strcmp(cmd, "init") == 0) {
+        return CmdInit();
     }
 
     /* 其他命令需要打开驱动 */
@@ -411,6 +423,18 @@ int main(int argc, char *argv[])
     } else if (strcmp(cmd, "queue") == 0) {
         int interval = (argc >= 3) ? atoi(argv[2]) : 1;
         ret = CmdQueue(hDriver, interval);
+    } else if (strcmp(cmd, "lock") == 0) {
+        ret = CmdLock(hDriver);
+    } else if (strcmp(cmd, "unlock") == 0) {
+        ret = CmdUnlock(hDriver);
+    } else if (strcmp(cmd, "set_pass") == 0) {
+        ret = CmdSetPass(hDriver);
+    } else if (strcmp(cmd, "rm_pass") == 0) {
+        ret = CmdRmPass(hDriver);
+    } else if (strcmp(cmd, "shutdown_now") == 0) {
+        ret = CmdShutdownNow(hDriver);
+    } else if (strcmp(cmd, "query_status") == 0) {
+        ret = CmdQueryStatus(hDriver);
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         PrintHelp(argv[0]);
@@ -419,4 +443,217 @@ int main(int argc, char *argv[])
 
     CloseHandle(hDriver);
     return ret;
+}
+
+/* ============================================================
+ *  新命令：lock / unlock / set_pass / rm_pass / shutdown_now / query_status
+ * ============================================================ */
+
+/* ---- 读取密码（不回显） ---- */
+static void ReadPassword(const char *prompt, WCHAR *buf, int bufLen)
+{
+    printf("%s", prompt);
+    fflush(stdout);
+    int i = 0;
+    while (i < bufLen - 1) {
+        int c = _getch();
+        if (c == '\r' || c == '\n') break;
+        if (c == '\b') {
+            if (i > 0) { i--; printf("\b \b"); fflush(stdout); }
+            continue;
+        }
+        if (c == 0 || c == 0xE0) { _getch(); continue; }  /* 跳过功能键 */
+        buf[i++] = (WCHAR)c;
+        printf("*");
+        fflush(stdout);
+    }
+    buf[i] = 0;
+    printf("\n");
+}
+
+/* ---- lock（无需密码） ---- */
+static int CmdLock(HANDLE hDriver)
+{
+    DWORD bytesReturned;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_LOCK,
+                         NULL, 0, NULL, 0, &bytesReturned, NULL)) {
+        fprintf(stderr, "LOCK failed: %lu\n", GetLastError());
+        return 1;
+    }
+    printf("Driver LOCKED. Shutdown is now blocked.\n");
+    return 0;
+}
+
+/* ---- unlock（需密码） ---- */
+static int CmdUnlock(HANDLE hDriver)
+{
+    WCHAR password[GSH_MAX_PASS_LEN];
+    ReadPassword("Enter password: ", password, GSH_MAX_PASS_LEN);
+    DWORD bytesReturned;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK,
+                         password, (DWORD)(wcslen(password) + 1) * sizeof(WCHAR),
+                         NULL, 0, &bytesReturned, NULL)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED) {
+            fprintf(stderr, "UNLOCK failed: wrong password.\n");
+        } else {
+            fprintf(stderr, "UNLOCK failed: %lu\n", err);
+        }
+        return 1;
+    }
+    printf("Driver UNLOCKED. Shutdown is now allowed.\n");
+    return 0;
+}
+
+/* ---- set_pass ---- */
+static int CmdSetPass(HANDLE hDriver)
+{
+    GSH_PASSWORD_INPUT input;
+    RtlZeroMemory(&input, sizeof(input));
+    ReadPassword("Enter old password (empty if none): ", input.OldPassword, GSH_MAX_PASS_LEN);
+    ReadPassword("Enter new password: ", input.NewPassword, GSH_MAX_PASS_LEN);
+    WCHAR confirm[GSH_MAX_PASS_LEN];
+    ReadPassword("Confirm new password: ", confirm, GSH_MAX_PASS_LEN);
+    if (wcscmp(input.NewPassword, confirm) != 0) {
+        fprintf(stderr, "Passwords do not match.\n");
+        return 1;
+    }
+    DWORD bytesReturned;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_SET_PASS,
+                         &input, sizeof(input), NULL, 0, &bytesReturned, NULL)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED) {
+            fprintf(stderr, "SET_PASS failed: wrong old password.\n");
+        } else {
+            fprintf(stderr, "SET_PASS failed: %lu\n", err);
+        }
+        return 1;
+    }
+    printf("Password changed successfully.\n");
+    return 0;
+}
+
+/* ---- rm_pass ---- */
+static int CmdRmPass(HANDLE hDriver)
+{
+    WCHAR password[GSH_MAX_PASS_LEN];
+    ReadPassword("Enter current password: ", password, GSH_MAX_PASS_LEN);
+    DWORD bytesReturned;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_RM_PASS,
+                         password, (DWORD)(wcslen(password) + 1) * sizeof(WCHAR),
+                         NULL, 0, &bytesReturned, NULL)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED) {
+            fprintf(stderr, "RM_PASS failed: wrong password.\n");
+        } else {
+            fprintf(stderr, "RM_PASS failed: %lu\n", err);
+        }
+        return 1;
+    }
+    printf("Password removed. No protection now.\n");
+    return 0;
+}
+
+/* ---- shutdown_now（需解锁 + 密码） ---- */
+static int CmdShutdownNow(HANDLE hDriver)
+{
+    printf("WARNING: This will force a system shutdown immediately.\n");
+    WCHAR password[GSH_MAX_PASS_LEN];
+    ReadPassword("Enter password to confirm: ", password, GSH_MAX_PASS_LEN);
+    DWORD bytesReturned;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_SHUTDOWN_NOW,
+                         password, (DWORD)(wcslen(password) + 1) * sizeof(WCHAR),
+                         NULL, 0, &bytesReturned, NULL)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED) {
+            fprintf(stderr, "SHUTDOWN_NOW failed: driver locked or wrong password.\n");
+        } else {
+            fprintf(stderr, "SHUTDOWN_NOW failed: %lu\n", err);
+        }
+        return 1;
+    }
+    printf("Shutdown initiated...\n");
+    return 0;
+}
+
+/* ---- query_status（无需密码） ---- */
+static int CmdQueryStatus(HANDLE hDriver)
+{
+    GSH_LOCK_STATUS status;
+    DWORD bytesReturned = 0;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_QUERY_LOCK_STATUS,
+                         NULL, 0, &status, sizeof(status),
+                         &bytesReturned, NULL)) {
+        fprintf(stderr, "QUERY_LOCK_STATUS failed: %lu\n", GetLastError());
+        return 1;
+    }
+    printf("=== GlobalShutdownHook Status ===\n");
+    printf("  Lock state  : %s\n", status.LockState == GSH_LOCKED ? "LOCKED" : "UNLOCKED");
+    printf("  Password    : %s\n", status.PasswordSet ? "SET" : "NONE");
+    printf("  Hooked (OK) : %lu\n", status.HookedCount);
+    printf("  Failed      : %lu\n", status.FailedCount);
+    printf("  Pending     : %lu\n", status.PendingCount);
+    printf("==================================\n");
+    return 0;
+}
+
+/* GDRVLoader 桥接函数（在 gdrv_bridge.cpp 中实现） */
+extern int GdrvLoadDriver(const wchar_t* targetDriverPath);
+extern int GdrvUnloadDriver(const wchar_t* driverName);
+
+/* ---- init（GDRVLoader 加载驱动 + 启动后台服务） ---- */
+static int CmdInit(VOID)
+{
+    printf("[*] GlobalShutdownHook init\n");
+    printf("    Loading unsigned driver via GDRVLoader...\n");
+
+    /* 构造驱动路径：相对于可执行文件所在目录 */
+    WCHAR driverPath[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, driverPath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        fprintf(stderr, "[ERROR] Cannot get module path.\n");
+        return 1;
+    }
+    WCHAR* lastSlash = wcsrchr(driverPath, L'\\');
+    if (lastSlash) *(lastSlash + 1) = L'\0';
+    wcscat_s(driverPath, MAX_PATH, L"GlobalShutdownHook.sys");
+
+    wprintf(L"    Driver path: %s\n", driverPath);
+
+    /* 1. 通过 GDRVLoader 加载未签名驱动 */
+    int rc = GdrvLoadDriver(driverPath);
+    if (rc != 0) {
+        fprintf(stderr, "[ERROR] GdrvLoadDriver failed (code=%d).\n", rc);
+        fprintf(stderr, "        Make sure you are running as Administrator.\n");
+        return 1;
+    }
+    printf("[OK] Driver loaded successfully.\n");
+
+    /* 2. 等待驱动设备就绪 */
+    Sleep(1500);
+
+    /* 3. 启动后台服务 ShutdownHookBgSrv.exe */
+    WCHAR bgSrvPath[MAX_PATH];
+    wcscpy_s(bgSrvPath, MAX_PATH, driverPath);
+    WCHAR* bsSlash = wcsrchr(bgSrvPath, L'\\');
+    if (bsSlash) *(bsSlash + 1) = L'\0';
+    wcscat_s(bgSrvPath, MAX_PATH, L"ShutdownHookBgSrv.exe");
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+    if (CreateProcessW(bgSrvPath, NULL, NULL, NULL, FALSE,
+                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        printf("[OK] Background service started (PID=%lu).\n", pi.dwProcessId);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        fprintf(stderr, "[WARN] Could not start background service: %lu\n", GetLastError());
+    }
+
+    printf("\n[OK] GlobalShutdownHook initialized.\n");
+    printf("     Use 'query_status' to check driver state.\n");
+    return 0;
 }

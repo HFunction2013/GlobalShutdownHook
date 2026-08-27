@@ -7,8 +7,17 @@
 #include "gsh_faillog.h"
 #include "gsh_notify.h"
 #include "gsh_hook.h"
+#include "gsh_lock.h"
 
 #define GSH_POOL_TAG 'HShG'
+
+/* ZwShutdownSystem - 用于 shutdown_now 强制关机 */
+typedef enum _SHUTDOWN_ACTION {
+    ShutdownNoReboot = 0,
+    ShutdownReboot = 1,
+    ShutdownPowerOff = 2
+} SHUTDOWN_ACTION;
+extern NTSTATUS NTAPI ZwShutdownSystem(_In_ SHUTDOWN_ACTION Action);
 
 /* ---- 前置声明 ---- */
 DRIVER_INITIALIZE DriverEntry;
@@ -21,6 +30,12 @@ static NTSTATUS GshIoctlGetFailLog(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlClearFailLog(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlUnhookAll(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlGetHookedList(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlLock(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlUnlock(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlSetPass(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlRmPass(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlShutdownNow(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 
 /* ---- 驱动入口 ---- */
@@ -38,12 +53,14 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     /* 1. 初始化子系统 */
     StateInitialize();
     FailLogInitialize();
+    LockInitialize();
 
     status = WorkerInitialize();
     if (!NT_SUCCESS(status)) {
         DbgPrint("GSH: WorkerInitialize failed: 0x%X\n", status);
         StateDestroy();
         FailLogDestroy();
+    LockDestroy();
         return status;
     }
 
@@ -63,6 +80,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
         WorkerShutdown();
         StateDestroy();
         FailLogDestroy();
+    LockDestroy();
         return status;
     }
 
@@ -75,6 +93,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
         WorkerShutdown();
         StateDestroy();
         FailLogDestroy();
+    LockDestroy();
         return status;
     }
 
@@ -95,6 +114,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
         WorkerShutdown();
         StateDestroy();
         FailLogDestroy();
+    LockDestroy();
         return status;
     }
 
@@ -124,6 +144,7 @@ VOID GshUnload(PDRIVER_OBJECT DriverObject)
     /* 4. 清理资源 */
     StateDestroy();
     FailLogDestroy();
+    LockDestroy();
 
     /* 5. 删除符号链接和设备 */
     RtlInitUnicodeString(&symName, GSH_SYMLINK_NAME);
@@ -169,6 +190,24 @@ NTSTATUS GshDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             break;
         case IOCTL_GSH_GET_QUEUE:
             status = GshIoctlGetQueue(Irp, irpSp);
+            break;
+        case IOCTL_GSH_LOCK:
+            status = GshIoctlLock(Irp, irpSp);
+            break;
+        case IOCTL_GSH_UNLOCK:
+            status = GshIoctlUnlock(Irp, irpSp);
+            break;
+        case IOCTL_GSH_SET_PASS:
+            status = GshIoctlSetPass(Irp, irpSp);
+            break;
+        case IOCTL_GSH_RM_PASS:
+            status = GshIoctlRmPass(Irp, irpSp);
+            break;
+        case IOCTL_GSH_SHUTDOWN_NOW:
+            status = GshIoctlShutdownNow(Irp, irpSp);
+            break;
+        case IOCTL_GSH_QUERY_LOCK_STATUS:
+            status = GshIoctlQueryLockStatus(Irp, irpSp);
             break;
         default:
             status = STATUS_INVALID_DEVICE_REQUEST;
@@ -241,6 +280,11 @@ static NTSTATUS GshIoctlClearFailLog(PIRP Irp, PIO_STACK_LOCATION IrpSp)
 static NTSTATUS GshIoctlUnhookAll(PIRP Irp, PIO_STACK_LOCATION IrpSp)
 {
     UNREFERENCED_PARAMETER(IrpSp);
+    /* 仅解锁状态允许移除钩子 */
+    if (LockIsLocked()) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_ACCESS_DENIED;
+    }
     HookRestoreAll();
     Irp->IoStatus.Information = 0;
     return STATUS_SUCCESS;
@@ -316,5 +360,107 @@ static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp)
     ULONG count = WorkerGetQueue((PGSH_QUEUE_ENTRY)(buffer + sizeof(ULONG)), maxEntries);
     *(PULONG)buffer = count;
     Irp->IoStatus.Information = sizeof(ULONG) + count * sizeof(GSH_QUEUE_ENTRY);
+    return STATUS_SUCCESS;
+}
+
+/* ============================================================
+ *  新 IOCTL：锁 / 解锁 / 密码 / 强制关机 / 状态查询
+ * ============================================================ */
+
+/* ---- IOCTL: LOCK（无需密码） ---- */
+static NTSTATUS GshIoctlLock(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    UNREFERENCED_PARAMETER(IrpSp);
+    NTSTATUS status = LockDoLock();
+    Irp->IoStatus.Information = 0;
+    return status;
+}
+
+/* ---- IOCTL: UNLOCK（需密码） ---- */
+static NTSTATUS GshIoctlUnlock(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    ULONG inLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+    if (inLen < sizeof(WCHAR)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    PCWSTR password = (PCWSTR)Irp->AssociatedIrp.SystemBuffer;
+    NTSTATUS status = LockDoUnlock(password);
+    Irp->IoStatus.Information = 0;
+    return status;
+}
+
+/* ---- IOCTL: SET_PASS（有密码需旧密码，无密码直接设置） ---- */
+static NTSTATUS GshIoctlSetPass(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    ULONG inLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+    if (inLen < sizeof(GSH_PASSWORD_INPUT)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    PGSH_PASSWORD_INPUT input = (PGSH_PASSWORD_INPUT)Irp->AssociatedIrp.SystemBuffer;
+    NTSTATUS status = LockSetPassword(input->OldPassword, input->NewPassword);
+    Irp->IoStatus.Information = 0;
+    return status;
+}
+
+/* ---- IOCTL: RM_PASS（需当前密码） ---- */
+static NTSTATUS GshIoctlRmPass(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    ULONG inLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+    if (inLen < sizeof(WCHAR)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    PCWSTR password = (PCWSTR)Irp->AssociatedIrp.SystemBuffer;
+    NTSTATUS status = LockRemovePassword(password);
+    Irp->IoStatus.Information = 0;
+    return status;
+}
+
+/* ---- IOCTL: SHUTDOWN_NOW（需解锁 + 密码，强制关机） ---- */
+static NTSTATUS GshIoctlShutdownNow(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    ULONG inLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+    if (inLen < sizeof(WCHAR)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    /* 必须处于解锁状态 */
+    if (LockIsLocked()) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_ACCESS_DENIED;
+    }
+    PCWSTR password = (PCWSTR)Irp->AssociatedIrp.SystemBuffer;
+    if (!LockCheckPassword(password)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_ACCESS_DENIED;
+    }
+    DbgPrint("GSH: shutdown_now authorized, initiating shutdown...\n");
+    Irp->IoStatus.Information = 0;
+    /* 先完成 IRP，再执行关机（避免关机时 IRP 未完成） */
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    ZwShutdownSystem(ShutdownPowerOff);
+    return STATUS_SUCCESS;
+}
+
+/* ---- IOCTL: QUERY_LOCK_STATUS（无需密码） ---- */
+static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    ULONG outLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+    if (outLen < sizeof(GSH_LOCK_STATUS)) {
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    PGSH_LOCK_STATUS status = (PGSH_LOCK_STATUS)Irp->AssociatedIrp.SystemBuffer;
+    RtlZeroMemory(status, sizeof(*status));
+    status->LockState = LockGetState();
+    status->PasswordSet = LockHasPassword() ? 1 : 0;
+    ULONG hooked = 0, failed = 0, pending = 0, total = 0;
+    StateGetCounts(&hooked, &failed, &pending, &total);
+    status->HookedCount = hooked;
+    status->FailedCount = failed;
+    status->PendingCount = pending;
+    Irp->IoStatus.Information = sizeof(GSH_LOCK_STATUS);
     return STATUS_SUCCESS;
 }

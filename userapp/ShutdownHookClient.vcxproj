@@ -79,16 +79,26 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>advapi32.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;user32.lib;shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
       <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ShutdownHookClient.c" />
+    <ClCompile Include="gdrv_bridge.cpp" />
+    <ClCompile Include="gdrvloader\exploit\swind2.cpp" />
+    <ClCompile Include="gdrvloader\exploit\pe.cpp" />
+    <ClCompile Include="gdrvloader\hde\hde64.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\driver\gsh_common.h" />
+    <ClInclude Include="gdrvloader\global.h" />
+    <ClInclude Include="gdrvloader\binary\bytes.h" />
+    <ClInclude Include="gdrvloader\binary\dropper.h" />
+    <ClInclude Include="gdrvloader\hde\hde64.h" />
+    <ClInclude Include="gdrvloader\hde\table64.h" />
+    <ClInclude Include="gdrvloader\utils\ntdll.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

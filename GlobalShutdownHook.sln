@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "GlobalShutdownHook", "drive
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ShutdownHookClient", "userapp\ShutdownHookClient.vcxproj", "{C3D7E2F4-5A6B-7890-CDEF-1234567890AB}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ShutdownHookBgSrv", "bgsrv\ShutdownHookBgSrv.vcxproj", "{C3D7E8F9-0A1B-2C3D-4E5F-6A7B8C9D0E1F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,10 @@ Global
 		{C3D7E2F4-5A6B-7890-CDEF-1234567890AB}.Debug|x64.Build.0 = Debug|x64
 		{C3D7E2F4-5A6B-7890-CDEF-1234567890AB}.Release|x64.ActiveCfg = Release|x64
 		{C3D7E2F4-5A6B-7890-CDEF-1234567890AB}.Release|x64.Build.0 = Release|x64
+		{C3D7E8F9-0A1B-2C3D-4E5F-6A7B8C9D0E1F}.Debug|x64.ActiveCfg = Debug|x64
+		{C3D7E8F9-0A1B-2C3D-4E5F-6A7B8C9D0E1F}.Debug|x64.Build.0 = Debug|x64
+		{C3D7E8F9-0A1B-2C3D-4E5F-6A7B8C9D0E1F}.Release|x64.ActiveCfg = Release|x64
+		{C3D7E8F9-0A1B-2C3D-4E5F-6A7B8C9D0E1F}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

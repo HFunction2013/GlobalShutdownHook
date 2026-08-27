@@ -95,6 +95,7 @@ jobs:
           path: |
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/GlobalShutdownHook.sys
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/ShutdownHookClient.exe
+            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/ShutdownHookBgSrv.exe
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.pdb
           if-no-files-found: error
           retention-days: 30
