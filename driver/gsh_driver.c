@@ -11,13 +11,14 @@
 
 #define GSH_POOL_TAG 'HShG'
 
-/* ZwShutdownSystem - 用于 shutdown_now 强制关机 */
+/* ZwShutdownSystem - 未在 WDK 导入库中导出，运行时动态解析 */
 typedef enum _SHUTDOWN_ACTION {
     ShutdownNoReboot = 0,
     ShutdownReboot = 1,
     ShutdownPowerOff = 2
 } SHUTDOWN_ACTION;
-extern NTSTATUS NTAPI ZwShutdownSystem(_In_ SHUTDOWN_ACTION Action);
+typedef NTSTATUS (NTAPI *PFN_ZW_SHUTDOWN_SYSTEM)(_In_ SHUTDOWN_ACTION Action);
+static PFN_ZW_SHUTDOWN_SYSTEM g_pfnZwShutdownSystem = NULL;
 
 /* ---- 前置声明 ---- */
 DRIVER_INITIALIZE DriverEntry;
@@ -54,6 +55,14 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     StateInitialize();
     FailLogInitialize();
     LockInitialize();
+
+    /* 动态解析 ZwShutdownSystem（未在 WDK 导入库中导出） */
+    UNICODE_STRING funcName;
+    RtlInitUnicodeString(&funcName, L"ZwShutdownSystem");
+    g_pfnZwShutdownSystem = (PFN_ZW_SHUTDOWN_SYSTEM)MmGetSystemRoutineAddress(&funcName);
+    if (!g_pfnZwShutdownSystem) {
+        DbgPrint("GSH: WARNING - ZwShutdownSystem not found, shutdown_now will fail\n");
+    }
 
     status = WorkerInitialize();
     if (!NT_SUCCESS(status)) {
@@ -436,11 +445,16 @@ static NTSTATUS GshIoctlShutdownNow(PIRP Irp, PIO_STACK_LOCATION IrpSp)
         Irp->IoStatus.Information = 0;
         return STATUS_ACCESS_DENIED;
     }
+    if (!g_pfnZwShutdownSystem) {
+        DbgPrint("GSH: shutdown_now failed - ZwShutdownSystem not resolved\n");
+        Irp->IoStatus.Information = 0;
+        return STATUS_NOT_SUPPORTED;
+    }
     DbgPrint("GSH: shutdown_now authorized, initiating shutdown...\n");
     Irp->IoStatus.Information = 0;
     /* 先完成 IRP，再执行关机（避免关机时 IRP 未完成） */
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
-    ZwShutdownSystem(ShutdownPowerOff);
+    g_pfnZwShutdownSystem(ShutdownPowerOff);
     return STATUS_SUCCESS;
 }
 
