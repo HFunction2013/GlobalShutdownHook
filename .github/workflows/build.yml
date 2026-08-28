@@ -35,20 +35,43 @@ jobs:
         uses: actions/checkout@v4
 
       # --------------------------------------------------------
-      # Install Windows SDK 10.0.26100 (includes km headers:
-      # ntddk.h, wdm.h, ntifs.h under Include\10.0.26100.0\km\).
-      # The runner may have a newer SDK but lack this exact
-      # version's km folder; install with all features.
+      # Cache Windows SDK 10.0.26100 layout
       # --------------------------------------------------------
-      - name: Install Windows SDK 10.0.26100
+      - name: Cache Windows SDK 10.0.26100 layout
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: C:\winsdk-layout\10.0.26100.0
+          key: winsdk-10.0.26100.0-layout-v1
+          restore-keys: |
+            winsdk-10.0.26100.0-layout-
+
+      - name: Download SDK layout (only on cache miss)
         shell: powershell
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
           $ProgressPreference = 'SilentlyContinue'
           $sdkUrl = "https://go.microsoft.com/fwlink/?linkid=2320455"
           $sdkExe = Join-Path $env:TEMP "winsdksetup.exe"
-          Write-Host "Downloading Windows SDK 10.0.26100 ..."
+          Write-Host "Downloading Windows SDK 10.0.26100 layout ..."
           Invoke-WebRequest -Uri $sdkUrl -OutFile $sdkExe
-          Write-Host "Installing SDK silently ..."
+          Write-Host "Extracting offline layout to C:\winsdk-layout\10.0.26100.0 ..."
+          Start-Process -FilePath $sdkExe `
+            -ArgumentList "/layout","C:\winsdk-layout\10.0.26100.0","/quiet" `
+            -Wait -NoNewWindow
+          Remove-Item $sdkExe -Force -ErrorAction SilentlyContinue
+
+      - name: Install Windows SDK 10.0.26100
+        shell: powershell
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $layout = "C:\winsdk-layout\10.0.26100.0"
+          $sdkExe = Join-Path $layout "winsdksetup.exe"
+          if (-not (Test-Path $sdkExe)) {
+            Write-Error "Layout installer not found: $sdkExe"
+            exit 1
+          }
+          Write-Host "Installing SDK silently from local layout ..."
           $p = Start-Process -FilePath $sdkExe `
             -ArgumentList "/features","+","/quiet","/norestart" `
             -Wait -PassThru -NoNewWindow
