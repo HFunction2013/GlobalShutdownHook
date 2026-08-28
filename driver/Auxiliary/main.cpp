@@ -37,6 +37,66 @@ static HANDLE g_BgSrvPid = NULL;
 static PDEVICE_OBJECT g_DeviceObject = NULL;
 static UNICODE_STRING g_DosDeviceName;
 
+/* 是否使用 syscall 号匹配 (当 MmGetSystemRoutineAddress 解析失败时启用) */
+static bool g_UseSyscallIndex = false;
+static ULONG g_SyscallUnload = 0;
+static ULONG g_SyscallTerminate = 0;
+static ULONG g_SyscallShutdown = 0;
+static ULONG g_SyscallPowerAction = 0;
+
+/* 从 nt-per-syscall.json 提取的跨版本 syscall 查找表 */
+typedef struct _AUX_SYSCALL_ENTRY {
+    ULONG Build;
+    ULONG Unload;
+    ULONG Terminate;
+    ULONG Shutdown;
+    ULONG PowerAction;
+} AUX_SYSCALL_ENTRY;
+
+static const AUX_SYSCALL_ENTRY g_AuxSyscallTable[] = {
+    { 10240, 425, 44, 408, 241 },
+    { 10586, 428, 44, 411, 243 },
+    { 14393, 434, 44, 417, 245 },
+    { 15063, 440, 44, 423, 248 },
+    { 16299, 444, 44, 426, 249 },
+    { 17134, 446, 44, 428, 250 },
+    { 17763, 447, 44, 429, 251 },
+    { 18362, 448, 44, 430, 252 },
+    { 18363, 448, 44, 430, 252 },
+    { 19041, 454, 44, 436, 257 },
+    { 19042, 454, 44, 436, 257 },
+    { 19043, 454, 44, 436, 257 },
+    { 19044, 456, 44, 438, 258 },
+    { 19045, 456, 44, 438, 258 },
+    { 20348, 462, 44, 444, 262 },
+    { 22000, 466, 44, 447, 263 },
+    { 22621, 470, 44, 451, 264 },
+    { 22631, 470, 44, 451, 264 },
+    { 26100, 473, 44, 454, 266 },
+};
+static const ULONG g_AuxSyscallTableCount = 19;
+
+/* 根据 build number 查找 syscall 号 (向下取整) */
+static bool AuxLookupSyscallNumbers(ULONG buildNumber)
+{
+    const AUX_SYSCALL_ENTRY* best = NULL;
+    for (ULONG i = 0; i < g_AuxSyscallTableCount; i++) {
+        if (g_AuxSyscallTable[i].Build <= buildNumber) {
+            best = &g_AuxSyscallTable[i];
+        } else {
+            break;
+        }
+    }
+    if (!best) return false;
+    g_SyscallUnload = best->Unload;
+    g_SyscallTerminate = best->Terminate;
+    g_SyscallShutdown = best->Shutdown;
+    g_SyscallPowerAction = best->PowerAction;
+    DbgPrintEx(0, 0, "[Auxiliary] Syscall lookup for build %lu: Unload=%lu Terminate=%lu Shutdown=%lu PowerAction=%lu\n",
+        buildNumber, g_SyscallUnload, g_SyscallTerminate, g_SyscallShutdown, g_SyscallPowerAction);
+    return true;
+}
+
 /* ============================================================
  *  syscall 函数类型定义
  * ============================================================ */
@@ -115,29 +175,55 @@ static NTSTATUS NTAPI FakeNtInitiatePowerAction(
 
 void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID* pSsdtAddress)
 {
-    UNREFERENCED_PARAMETER(nCallIndex);
     if (!pSsdtAddress) return;
 
-    /* 替换我们需要拦截的 syscall */
-    if (*pSsdtAddress == g_pNtUnloadDriver)
+    /* 优先使用函数地址匹配 (MmGetSystemRoutineAddress 成功时) */
+    if (!g_UseSyscallIndex)
     {
-        g_OriginalNtUnloadDriver = *pSsdtAddress;
-        *pSsdtAddress = FakeNtUnloadDriver;
+        if (*pSsdtAddress == g_pNtUnloadDriver)
+        {
+            g_OriginalNtUnloadDriver = *pSsdtAddress;
+            *pSsdtAddress = FakeNtUnloadDriver;
+        }
+        else if (*pSsdtAddress == g_pNtTerminateProcess)
+        {
+            g_OriginalNtTerminateProcess = *pSsdtAddress;
+            *pSsdtAddress = FakeNtTerminateProcess;
+        }
+        else if (*pSsdtAddress == g_pNtShutdownSystem)
+        {
+            g_OriginalNtShutdownSystem = *pSsdtAddress;
+            *pSsdtAddress = FakeNtShutdownSystem;
+        }
+        else if (*pSsdtAddress == g_pNtInitiatePowerAction)
+        {
+            g_OriginalNtInitiatePowerAction = *pSsdtAddress;
+            *pSsdtAddress = FakeNtInitiatePowerAction;
+        }
     }
-    else if (*pSsdtAddress == g_pNtTerminateProcess)
+    else
     {
-        g_OriginalNtTerminateProcess = *pSsdtAddress;
-        *pSsdtAddress = FakeNtTerminateProcess;
-    }
-    else if (*pSsdtAddress == g_pNtShutdownSystem)
-    {
-        g_OriginalNtShutdownSystem = *pSsdtAddress;
-        *pSsdtAddress = FakeNtShutdownSystem;
-    }
-    else if (*pSsdtAddress == g_pNtInitiatePowerAction)
-    {
-        g_OriginalNtInitiatePowerAction = *pSsdtAddress;
-        *pSsdtAddress = FakeNtInitiatePowerAction;
+        /* 地址解析失败时，使用 syscall 号匹配 (从 nt-per-syscall.json 提取) */
+        if (nCallIndex == g_SyscallUnload)
+        {
+            g_OriginalNtUnloadDriver = *pSsdtAddress;
+            *pSsdtAddress = FakeNtUnloadDriver;
+        }
+        else if (nCallIndex == g_SyscallTerminate)
+        {
+            g_OriginalNtTerminateProcess = *pSsdtAddress;
+            *pSsdtAddress = FakeNtTerminateProcess;
+        }
+        else if (nCallIndex == g_SyscallShutdown)
+        {
+            g_OriginalNtShutdownSystem = *pSsdtAddress;
+            *pSsdtAddress = FakeNtShutdownSystem;
+        }
+        else if (nCallIndex == g_SyscallPowerAction)
+        {
+            g_OriginalNtInitiatePowerAction = *pSsdtAddress;
+            *pSsdtAddress = FakeNtInitiatePowerAction;
+        }
     }
 }
 
@@ -148,29 +234,61 @@ void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID* pSsdtAddress)
 static bool GetSyscallAddresses()
 {
     UNICODE_STRING str;
+    ULONG resolvedCount = 0;
 
     WCHAR nameUnload[] = L"NtUnloadDriver";
     RtlInitUnicodeString(&str, nameUnload);
     g_pNtUnloadDriver = MmGetSystemRoutineAddress(&str);
+    if (g_pNtUnloadDriver) resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtUnloadDriver: %p\n", g_pNtUnloadDriver);
 
     WCHAR nameTerminate[] = L"NtTerminateProcess";
     RtlInitUnicodeString(&str, nameTerminate);
     g_pNtTerminateProcess = MmGetSystemRoutineAddress(&str);
+    if (g_pNtTerminateProcess) resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtTerminateProcess: %p\n", g_pNtTerminateProcess);
 
     WCHAR nameShutdown[] = L"NtShutdownSystem";
     RtlInitUnicodeString(&str, nameShutdown);
     g_pNtShutdownSystem = MmGetSystemRoutineAddress(&str);
+    if (g_pNtShutdownSystem) resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtShutdownSystem: %p\n", g_pNtShutdownSystem);
 
     WCHAR namePower[] = L"NtInitiatePowerAction";
     RtlInitUnicodeString(&str, namePower);
     g_pNtInitiatePowerAction = MmGetSystemRoutineAddress(&str);
+    if (g_pNtInitiatePowerAction) resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtInitiatePowerAction: %p\n", g_pNtInitiatePowerAction);
 
-    return (g_pNtUnloadDriver && g_pNtTerminateProcess &&
-            g_pNtShutdownSystem && g_pNtInitiatePowerAction);
+    /* 如果全部解析成功，使用函数地址匹配 */
+    if (resolvedCount == 4)
+    {
+        g_UseSyscallIndex = false;
+        DbgPrintEx(0, 0, "[Auxiliary] All 4 syscall addresses resolved, using address matching\n");
+        return true;
+    }
+
+    /* 部分或全部解析失败，回退到 syscall 号匹配 (从 nt-per-syscall.json) */
+    DbgPrintEx(0, 0, "[Auxiliary] Only %lu/4 addresses resolved, falling back to syscall index matching\n", resolvedCount);
+    g_UseSyscallIndex = true;
+
+    /* 获取当前系统 build number */
+    RTL_OSVERSIONINFOW osvi = { 0 };
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    if (!NT_SUCCESS(RtlGetVersion(&osvi)))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] RtlGetVersion failed\n");
+        return false;
+    }
+
+    /* 从查找表获取 syscall 号 */
+    if (!AuxLookupSyscallNumbers(osvi.dwBuildNumber))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] No syscall lookup entry for build %lu\n", osvi.dwBuildNumber);
+        return false;
+    }
+
+    return true;
 }
 
 /* ============================================================
