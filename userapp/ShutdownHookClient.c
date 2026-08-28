@@ -609,6 +609,7 @@ static int CmdQueryStatus(HANDLE hDriver)
 /* GDRVLoader 桥接函数（在 gdrv_bridge.cpp 中实现） */
 extern int GdrvLoadDriver(const wchar_t* targetDriverPath);
 extern int GdrvUnloadDriver(const wchar_t* driverName);
+extern unsigned long GdrvGetLastStatus(void);
 
 /* ---- init（GDRVLoader 加载驱动 + 启动后台服务） ---- */
 static int CmdInit(VOID)
