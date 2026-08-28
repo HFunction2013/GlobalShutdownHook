@@ -114,28 +114,81 @@ typedef NTSTATUS(NTAPI* NtInitiatePowerAction_t)(
  *  假的 syscall 函数 (拦截逻辑)
  * ============================================================ */
 
+/* 自定义宽字符串子串查找（不依赖 CRT wcsstr，内核安全） */
+static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
+{
+    if (!str || !search || !*search) return str;
+    for (; *str; str++)
+    {
+        PWCHAR s1 = str, s2 = search;
+        while (*s1 && *s2 && (*s1 == *s2)) { s1++; s2++; }
+        if (!*s2) return str;
+    }
+    return NULL;
+}
+
 static NTSTATUS NTAPI FakeNtUnloadDriver(PUNICODE_STRING DriverServiceName)
 {
     /* 只阻止卸载我们自己的两个驱动: Auxiliary.sys 和 GlobalShutdownHook.sys */
-    if (DriverServiceName && DriverServiceName->Buffer && DriverServiceName->Length > 0)
+    if (DriverServiceName)
     {
-        /* 分配临时缓冲区用于大小写不敏感比较 */
-        USHORT len = DriverServiceName->Length;
-        PWCHAR buf = (PWCHAR)ExAllocatePoolWithTag(NonPagedPool, len + sizeof(WCHAR), 'AuxU');
-        if (buf)
-        {
-            RtlZeroMemory(buf, len + sizeof(WCHAR));
-            RtlCopyMemory(buf, DriverServiceName->Buffer, len);
+        USHORT len = 0;
+        PWCHAR userBuf = NULL;
+        PWCHAR safeBuf = NULL;
+        bool blocked = false;
 
-            /* 大小写不敏感检查是否包含我们的驱动名 */
-            if (wcsstr(buf, L"Auxiliary") || wcsstr(buf, L"GlobalShutdownHook"))
+        /* BUG1修复: 用 __try/__except 安全访问用户态 UNICODE_STRING，避免 TOCTOU */
+        __try
+        {
+            ProbeForRead(DriverServiceName, sizeof(UNICODE_STRING), 1);
+            len = DriverServiceName->Length;
+            userBuf = DriverServiceName->Buffer;
+            if (userBuf && len > 0)
             {
-                ExFreePoolWithTag(buf, 'AuxU');
-                InterlockedIncrement(&g_BlockedCount);
-                DbgPrintEx(0, 0, "[Auxiliary] Blocked NtUnloadDriver: %wZ\n", DriverServiceName);
-                return STATUS_ACCESS_DENIED;
+                ProbeForRead(userBuf, len, 1);
             }
-            ExFreePoolWithTag(buf, 'AuxU');
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER)
+        {
+            len = 0;
+            userBuf = NULL;
+        }
+
+        if (userBuf && len > 0)
+        {
+            /* 复制到内核缓冲区 */
+            safeBuf = (PWCHAR)ExAllocatePoolWithTag(NonPagedPool, len + sizeof(WCHAR), 'AuxU');
+            if (safeBuf)
+            {
+                RtlZeroMemory(safeBuf, len + sizeof(WCHAR));
+                __try
+                {
+                    RtlCopyMemory(safeBuf, userBuf, len);
+                }
+                __except(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    ExFreePoolWithTag(safeBuf, 'AuxU');
+                    safeBuf = NULL;
+                }
+            }
+
+            if (safeBuf)
+            {
+                /* BUG2修复: 使用自定义宽字符串查找，不依赖 CRT wcsstr */
+                if (AuxFindSubstring(safeBuf, L"Auxiliary") ||
+                    AuxFindSubstring(safeBuf, L"GlobalShutdownHook"))
+                {
+                    blocked = true;
+                    InterlockedIncrement(&g_BlockedCount);
+                    DbgPrintEx(0, 0, "[Auxiliary] Blocked NtUnloadDriver\n");
+                }
+                ExFreePoolWithTag(safeBuf, 'AuxU');
+            }
+        }
+
+        if (blocked)
+        {
+            return STATUS_ACCESS_DENIED;
         }
     }
 
