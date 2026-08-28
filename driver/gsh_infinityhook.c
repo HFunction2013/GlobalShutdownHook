@@ -172,6 +172,7 @@ typedef NTSTATUS (NTAPI *PFN_ZwQuerySystemInformation)(SYSTEM_INFORMATION_CLASS,
 static INFINITY_CALLBACK g_InfinityCallback = NULL;
 static ULONG g_BuildNumber = 0;
 static PVOID g_SystemCallTable = NULL;
+static ULONG g_NtoskrnlSize = 0;
 static PVOID g_EtwpDebuggerData = NULL;
 static PVOID g_CkclWmiLoggerContext = NULL;
 static PVOID *g_GetCpuClock = NULL;
@@ -229,37 +230,65 @@ static PVOID GetNtoskrnlBase(VOID)
     if (NT_SUCCESS(g_pZwQuerySystemInformation(SystemModuleInformation, pMods, len, &len))) {
         if (pMods->ulModuleCount > 0) {
             base = pMods->Modules[0].Base;
+            g_NtoskrnlSize = pMods->Modules[0].Size;
         }
     }
     ExFreePoolWithTag(pMods, 'MIFG');
     return base;
 }
 
-/* 特征码搜索 */
+/* 安全的特征码搜索 - 逐页检查 MmIsAddressValid，防止访问无效内存导致蓝屏 */
 static PVOID FindPattern(PVOID base, ULONG size, const UCHAR *pattern, const CHAR *mask)
 {
     if (!base || !pattern || !mask) return NULL;
     ULONG patternLen = (ULONG)strlen(mask);
     if (patternLen == 0 || size < patternLen) return NULL;
 
-    for (ULONG i = 0; i <= size - patternLen; i++) {
-        BOOLEAN found = TRUE;
-        for (ULONG j = 0; j < patternLen; j++) {
-            if (mask[j] != '?' && ((PUCHAR)base)[i + j] != pattern[j]) {
-                found = FALSE;
-                break;
+    PUCHAR pBase = (PUCHAR)base;
+    const ULONG pageSize = 0x1000;
+
+    /* 逐页搜索，每页开始前检查有效性 */
+    for (ULONG pageStart = 0; pageStart < size; pageStart += pageSize) {
+        ULONG pageEnd = pageStart + pageSize;
+        if (pageEnd > size) pageEnd = size;
+
+        /* 检查页起始地址是否有效 */
+        if (!MmIsAddressValid(pBase + pageStart)) continue;
+
+        /* 在当前页内搜索 */
+        ULONG searchEnd = pageEnd;
+        if (searchEnd > size - patternLen + 1) searchEnd = size - patternLen + 1;
+
+        for (ULONG i = pageStart; i < searchEnd && i < pageEnd; i++) {
+            /* 检查模式匹配范围是否都有效 (可能跨页) */
+            BOOLEAN rangeValid = TRUE;
+            for (ULONG j = 0; j < patternLen; j += pageSize) {
+                if (!MmIsAddressValid(pBase + i + j)) {
+                    rangeValid = FALSE;
+                    break;
+                }
             }
+            if (!rangeValid) continue;
+
+            BOOLEAN found = TRUE;
+            for (ULONG j = 0; j < patternLen; j++) {
+                if (mask[j] != '?' && pBase[i + j] != pattern[j]) {
+                    found = FALSE;
+                    break;
+                }
+            }
+            if (found) return (PVOID)(pBase + i);
         }
-        if (found) return (PVOID)((PUCHAR)base + i);
     }
     return NULL;
 }
 
-/* 在 ntoskrnl 模块中搜索特征码 */
+/* 在 ntoskrnl 模块中搜索特征码 - 使用实际模块大小 */
 static PVOID FindPatternInNtos(PVOID ntosBase, const UCHAR *pattern, const CHAR *mask)
 {
-    /* 简化：在 ntoskrnl 的前 0x400000 字节中搜索 */
-    return FindPattern(ntosBase, 0x400000, pattern, mask);
+    ULONG searchSize = g_NtoskrnlSize;
+    if (searchSize == 0) searchSize = 0x200000; /* 后备：2MB */
+    return FindPattern(ntosBase, searchSize, pattern, mask);
 }
 
 /* 获取 SSDT (KiServiceTable) 基址 */

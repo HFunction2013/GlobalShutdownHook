@@ -21,18 +21,18 @@
 ## 架构
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    Kernel Mode                       │
+┌─────────────────────────────────────────────────────┐
+│                    Kernel Mode                        │
 │                                                      │
 │  DriverEntry                                         │
-│    ├─ Init StateTable (PID+Func → Hook状态)          │
-│    ├─ Init FailLog   (失败记录环形缓冲区)            │
-│    ├─ Init WorkerThread (PASSIVE_LEVEL 执行hook)     │
-│    ├─ PsSetLoadImageNotifyRoutine(ImageLoadCB)       │
-│    └─ EnumerateAllProcesses() → 入队                 │
+│    ├─ Init StateTable (PID+Func → Hook状态)         │
+│    ├─ Init FailLog   (失败记录环形缓冲区)             │
+│    ├─ Init WorkerThread (PASSIVE_LEVEL 执行hook)    │
+│    ├─ PsSetLoadImageNotifyRoutine(ImageLoadCB)      │
+│    └─ EnumerateAllProcesses() → 入队                │
 │                                                      │
 │  ImageLoadCallback (可能 DISPATCH_LEVEL)             │
-│    └─ 判断 user32.dll/advapi32.dll → 入队            │
+│    └─ 判断 user32.dll/advapi32.dll → 入队           │
 │                                                      │
 │  WorkerThread                                        │
 │    └─ Dequeue → Attach Process → PE解析 → InlineHook │
@@ -43,15 +43,15 @@
 │    ├─ GET_STATUS     统计信息                        │
 │    ├─ GET_HOOKED_LIST 所有hook条目                   │
 │    ├─ GET_FAIL_LOG   失败记录                        │
-│    ├─ CLEAR_FAIL_LOG 清空失败记录                    │
+│    ├─ CLEAR_FAIL_LOG 清空失败记录                     │
 │    └─ UNHOOK_ALL     恢复所有hook                    │
-└──────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────┘
          │ IOCTL (DeviceIoControl)
          ▼
 ┌─────────────────────────────────────────────────────┐
-│                  User Mode                          │
-│                                                     │
-│  ShutdownHookClient.exe                             │
+│                  User Mode                            │
+│                                                      │
+│  ShutdownHookClient.exe                              │
 │    status / list / failures / clear / unhook        │
 │    test / test-advapi / monitor                     │
 └─────────────────────────────────────────────────────┘
