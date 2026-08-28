@@ -265,6 +265,8 @@ static void SafeExitProcess(UINT uExitCode)
 /* ---- 全局状态 ---- */
 static HINSTANCE g_hInst = NULL;
 static HWND      g_hOverlayWnd = NULL;
+static int       g_overlayX = 0;
+static int       g_overlayY = 0;
 static HWND      g_hTrayWnd = NULL;
 static HFONT     g_hFont = NULL;
 static HFONT     g_hTitleFont = NULL;
@@ -461,19 +463,16 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         break;
     }
 
-    /* 允许拖动窗口（左键拖动） */
-    case WM_LBUTTONDOWN: {
-        ReleaseCapture();
-        SendMessageW(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    /* 禁止拖动窗口 - 左键不做任何处理 */
+    case WM_LBUTTONDOWN:
         break;
-    }
 
-    /* 右键菜单（仅 Hide，无 Exit —— Critical 进程不允许手动退出） */
+    /* 右键菜单 - 无 Hide，无 Exit（Critical 进程不允许手动退出或隐藏） */
     case WM_RBUTTONUP: {
         POINT pt;
         GetCursorPos(&pt);
         HMENU hMenu = CreatePopupMenu();
-        AppendMenuW(hMenu, MF_STRING, 1, L"&Hide overlay");
+        AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 1, L"Hide (disabled)");
         AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 2, L"Exit (disabled - driver must be unloaded first)");
         SetForegroundWindow(hWnd);
         TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
@@ -482,11 +481,28 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     }
 
     case WM_COMMAND:
-        if (LOWORD(wParam) == 1) {
-            ShowWindow(hWnd, SW_HIDE);
-        }
-        /* wParam == 2 (Exit) 已禁用，不做任何处理 */
+        /* 所有菜单选项都已禁用，不做任何处理 */
         break;
+
+    /* 禁止隐藏窗口 - 任何试图隐藏的操作都被拒绝 */
+    case WM_SHOWWINDOW:
+        if (wParam == FALSE) {
+            /* 有人试图隐藏窗口，强制显示 */
+            ShowWindow(hWnd, SW_SHOWNOACTIVATE);
+            return 0;
+        }
+        break;
+
+    /* 禁止移动和隐藏窗口 - 固定位置，拒绝 SWP_HIDEWINDOW */
+    case WM_WINDOWPOSCHANGING: {
+        WINDOWPOS *pwp = (WINDOWPOS *)lParam;
+        /* 移除隐藏标志 */
+        pwp->flags &= ~SWP_HIDEWINDOW;
+        /* 固定窗口位置（右上角） */
+        pwp->x = g_overlayX;
+        pwp->y = g_overlayY;
+        break;
+    }
 
     case WM_DESTROY:
         KillTimer(hWnd, TIMER_OVERLAY_ID);
@@ -530,18 +546,14 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_TRAYICON:
         if (lParam == WM_LBUTTONDBLCLK) {
-            if (IsWindowVisible(g_hOverlayWnd)) {
-                ShowWindow(g_hOverlayWnd, SW_HIDE);
-            } else {
-                ShowWindow(g_hOverlayWnd, SW_SHOW);
-                SetWindowPos(g_hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0,
-                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            /* 禁止双击托盘图标隐藏/显示窗口 - 窗口始终可见 */
+            SetWindowPos(g_hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0,
+                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         } else if (lParam == WM_RBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            AppendMenuW(hMenu, MF_STRING, 1, L"Show/&Hide overlay");
+            AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 1, L"Show/Hide (disabled)");
             AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 2, L"Exit (disabled - driver must be unloaded first)");
             SetForegroundWindow(hWnd);
             TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
@@ -550,15 +562,28 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         break;
 
     case WM_COMMAND:
-        if (LOWORD(wParam) == 1) {
-            if (IsWindowVisible(g_hOverlayWnd)) {
-                ShowWindow(g_hOverlayWnd, SW_HIDE);
-            } else {
-                ShowWindow(g_hOverlayWnd, SW_SHOW);
-            }
-        }
-        /* wParam == 2 (Exit) 已禁用，不做任何处理 */
+        /* 所有菜单选项都已禁用，不做任何处理 */
         break;
+
+    /* 禁止隐藏窗口 - 任何试图隐藏的操作都被拒绝 */
+    case WM_SHOWWINDOW:
+        if (wParam == FALSE) {
+            /* 有人试图隐藏窗口，强制显示 */
+            ShowWindow(hWnd, SW_SHOWNOACTIVATE);
+            return 0;
+        }
+        break;
+
+    /* 禁止移动和隐藏窗口 - 固定位置，拒绝 SWP_HIDEWINDOW */
+    case WM_WINDOWPOSCHANGING: {
+        WINDOWPOS *pwp = (WINDOWPOS *)lParam;
+        /* 移除隐藏标志 */
+        pwp->flags &= ~SWP_HIDEWINDOW;
+        /* 固定窗口位置（右上角） */
+        pwp->x = g_overlayX;
+        pwp->y = g_overlayY;
+        break;
+    }
 
     case WM_DESTROY:
         Shell_NotifyIconW(NIM_DELETE, &g_nid);
@@ -632,6 +657,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int x = screenW - OVERLAY_WIDTH - OVERLAY_MARGIN;
     int y = OVERLAY_MARGIN;
+    g_overlayX = x;
+    g_overlayY = y;
 
     /* ---- 创建 Overlay 窗口 ---- */
     g_hOverlayWnd = CreateWindowExW(
