@@ -90,6 +90,7 @@
     <ClInclude Include="gsh_faillog.h" />
     <ClInclude Include="gsh_lock.h" />
     <ClInclude Include="gsh_notify.h" />
+    <ClInclude Include="gsh_infinityhook.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="gsh_driver.c" />
@@ -100,6 +101,7 @@
     <ClCompile Include="gsh_faillog.c" />
     <ClCompile Include="gsh_lock.c" />
     <ClCompile Include="gsh_notify.c" />
+    <ClCompile Include="gsh_infinityhook.c" />
   </ItemGroup>
   <!-- INF file kept in repo for manual installation; excluded from build
        to avoid InfVerif.dll dependency on CI runners. -->
