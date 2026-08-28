@@ -497,21 +497,43 @@ static int CmdLock(HANDLE hDriver)
     return 0;
 }
 
-/* ---- unlock（需密码） ---- */
-static int CmdUnlock(HANDLE hDriver)
+
+/* ---- 密码验证：如果驱动未设置密码则跳过，否则提示输入并验证 ---- */
+static BOOL VerifyPasswordOrSkip(HANDLE hDriver)
 {
+    /* 先查询驱动状态，检查是否设置了密码 */
+    GSH_LOCK_STATUS status;
+    DWORD bytesRet = 0;
+    if (DeviceIoControl(hDriver, IOCTL_GSH_QUERY_LOCK_STATUS,
+                         NULL, 0, &status, sizeof(status), &bytesRet, NULL)) {
+        if (!status.PasswordSet) {
+            printf("[INFO] No password set, skipping password prompt.\n");
+            return TRUE;
+        }
+    }
+
+    /* 有密码，提示输入 */
     WCHAR password[GSH_MAX_PASS_LEN];
     ReadPassword("Enter password: ", password, GSH_MAX_PASS_LEN);
-    DWORD bytesReturned;
+
     if (!DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK,
                          password, (DWORD)(wcslen(password) + 1) * sizeof(WCHAR),
-                         NULL, 0, &bytesReturned, NULL)) {
+                         NULL, 0, &bytesRet, NULL)) {
         DWORD err = GetLastError();
         if (err == ERROR_ACCESS_DENIED) {
-            fprintf(stderr, "UNLOCK failed: wrong password.\n");
+            fprintf(stderr, "Wrong password.\n");
         } else {
-            fprintf(stderr, "UNLOCK failed: %lu\n", err);
+            fprintf(stderr, "Password verify failed: %lu\n", err);
         }
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* ---- unlock（需密码，无密码则跳过） ---- */
+static int CmdUnlock(HANDLE hDriver)
+{
+    if (!VerifyPasswordOrSkip(hDriver)) {
         return 1;
     }
     printf("Driver UNLOCKED. Shutdown is now allowed.\n");
@@ -675,20 +697,9 @@ static int CmdInit(VOID)
 /* ---- quit（需密码：unhook + 卸载驱动 + 退出 BgSrv） ---- */
 static int CmdQuit(HANDLE hDriver)
 {
-    /* 1. 密码验证（通过 UNLOCK IOCTL，密码错误则拒绝） */
-    WCHAR password[GSH_MAX_PASS_LEN];
-    ReadPassword("Enter password: ", password, GSH_MAX_PASS_LEN);
-
-    DWORD bytesReturned;
-    if (!DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK,
-                         password, (DWORD)(wcslen(password) + 1) * sizeof(WCHAR),
-                         NULL, 0, &bytesReturned, NULL)) {
-        DWORD err = GetLastError();
-        if (err == ERROR_ACCESS_DENIED) {
-            fprintf(stderr, "QUIT failed: wrong password.\n");
-        } else {
-            fprintf(stderr, "QUIT failed (password verify): %lu\n", err);
-        }
+    /* 1. 密码验证（无密码则跳过，有密码则提示输入） */
+    if (!VerifyPasswordOrSkip(hDriver)) {
+        fprintf(stderr, "QUIT failed: password verification failed.\n");
         return 1;
     }
     printf("[1/3] Password verified. Driver UNLOCKED.\n");
