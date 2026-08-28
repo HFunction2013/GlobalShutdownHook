@@ -697,6 +697,8 @@ static int CmdInit(VOID)
 /* ---- quit（需密码：unhook + 卸载驱动 + 退出 BgSrv） ---- */
 static int CmdQuit(HANDLE hDriver)
 {
+    DWORD bytesReturned = 0;
+
     /* 1. 密码验证（无密码则跳过，有密码则提示输入） */
     if (!VerifyPasswordOrSkip(hDriver)) {
         fprintf(stderr, "QUIT failed: password verification failed.\n");
