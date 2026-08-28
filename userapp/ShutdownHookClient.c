@@ -19,7 +19,8 @@
 #include <time.h>
 #include <conio.h>
 
-#include "../driver/gsh_common.h"
+#include "../driver/GlobalShutdownHook/gsh_common.h"
+#include "../driver/Auxiliary/Auxiliary.h"
 
 /* ---- advapi32 函数声明（用于测试） ---- */
 typedef BOOL (WINAPI *PFN_InitiateSystemShutdownExW)(
@@ -687,6 +688,45 @@ static int CmdInit(VOID)
         CloseHandle(pi.hProcess);
     } else {
         fprintf(stderr, "[WARN] Could not start background service: %lu\n", GetLastError());
+    }
+
+    /* 4. 加载 Auxiliary.sys (InfinityHook 系统调用拦截驱动) */
+    WCHAR auxPath[MAX_PATH];
+    wcscpy_s(auxPath, MAX_PATH, driverPath);
+    WCHAR* auxSlash = wcsrchr(auxPath, L'\\');
+    if (auxSlash) *(auxSlash + 1) = L'\0';
+    wcscat_s(auxPath, MAX_PATH, L"Auxiliary.sys");
+
+    int auxRc = GdrvLoadDriver(auxPath);
+    if (auxRc != 0) {
+        fprintf(stderr, "[WARN] GdrvLoadDriver(Auxiliary) failed (code=%d). Syscall interception disabled.\n", auxRc);
+    } else {
+        printf("[OK] Auxiliary.sys loaded (InfinityHook syscall interceptor).\n");
+        Sleep(1000);
+
+        /* 5. 初始化 Auxiliary (InfinityHook) */
+        HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hAux != INVALID_HANDLE_VALUE) {
+            DWORD auxBytes = 0;
+            if (DeviceIoControl(hAux, IOCTL_AUX_INITIALIZE, NULL, 0, NULL, 0, &auxBytes, NULL)) {
+                printf("[OK] Auxiliary InfinityHook initialized.\n");
+            } else {
+                fprintf(stderr, "[WARN] Auxiliary initialize failed: %lu\n", GetLastError());
+            }
+
+            /* 6. 设置 BgSrv PID 到 Auxiliary */
+            if (pi.hProcess) {
+                HANDLE bgSrvPid = (HANDLE)(ULONG_PTR)pi.dwProcessId;
+                DeviceIoControl(hAux, IOCTL_AUX_SET_BGSRV_PID, &bgSrvPid, sizeof(bgSrvPid),
+                                 NULL, 0, &auxBytes, NULL);
+                printf("[OK] BgSrv PID registered with Auxiliary.\n");
+            }
+            CloseHandle(hAux);
+        } else {
+            fprintf(stderr, "[WARN] Cannot open Auxiliary device: %lu\n", GetLastError());
+        }
     }
 
     printf("\n[OK] GlobalShutdownHook initialized.\n");

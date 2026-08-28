@@ -8,7 +8,6 @@
 #include "gsh_notify.h"
 #include "gsh_hook.h"
 #include "gsh_lock.h"
-#include "gsh_infinityhook.h"
 
 #define GSH_POOL_TAG 'HShG'
 
@@ -42,7 +41,6 @@ static NTSTATUS GshIoctlRmPass(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlShutdownNow(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp);
-static NTSTATUS GshIoctlSetBgSrvPid(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 
 /* ---- 驱动入口 ---- */
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
@@ -135,15 +133,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     /* 6. 枚举现存进程并入队 */
     NotifyEnumerateProcesses();
 
-#if 0
-    /* TODO: InfinityHook 全局禁用 - 特征码搜索导致蓝屏，后续修复后再启用 */
-    status = InfinityHookInitialize();
-    if (!NT_SUCCESS(status)) {
-        DbgPrint("GSH: InfinityHookInitialize failed: 0x%X (continuing without syscall hook)\n", status);
-    }
-#else
-    DbgPrint("GSH: InfinityHook globally disabled (TODO: fix pattern search BSOD)\n");
-#endif
+    /* InfinityHook 已拆分为独立驱动 Auxiliary.sys，通过 IOCTL 通信 */
 
     DbgPrint("GSH: Driver loaded successfully\n");
     return STATUS_SUCCESS;
@@ -156,10 +146,7 @@ VOID GshUnload(PDRIVER_OBJECT DriverObject)
 
     DbgPrint("GSH: Unloading driver\n");
 
-#if 0
-    /* TODO: InfinityHook 全局禁用 */
-    InfinityHookShutdown();
-#endif
+    /* Auxiliary.sys 独立卸载，主驱动不直接控制 */
 
     /* 1. 停止接收新镜像通知 */
     NotifyUnregister();
@@ -237,9 +224,6 @@ NTSTATUS GshDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             break;
         case IOCTL_GSH_QUERY_LOCK_STATUS:
             status = GshIoctlQueryLockStatus(Irp, irpSp);
-            break;
-        case IOCTL_GSH_SET_BGSRV_PID:
-            status = GshIoctlSetBgSrvPid(Irp, irpSp);
             break;
         default:
             status = STATUS_INVALID_DEVICE_REQUEST;
@@ -503,17 +487,3 @@ static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp)
     return STATUS_SUCCESS;
 }
 
-/* ---- IOCTL_GSH_SET_BGSRV_PID: 设置 BgSrv 进程 PID (用于 NtTerminateProcess 过滤) ---- */
-static NTSTATUS GshIoctlSetBgSrvPid(PIRP Irp, PIO_STACK_LOCATION IrpSp)
-{
-    ULONG inLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
-    if (inLen < sizeof(HANDLE)) {
-        Irp->IoStatus.Information = 0;
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-    HANDLE pid = *(PHANDLE)Irp->AssociatedIrp.SystemBuffer;
-    InfinityHookSetBgSrvPid(pid);
-    DbgPrint("GSH: BgSrv PID set to %p via IOCTL\n", pid);
-    Irp->IoStatus.Information = 0;
-    return STATUS_SUCCESS;
-}

@@ -17,7 +17,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <tlhelp32.h>
-#include "../driver/gsh_common.h"
+#include "../driver/GlobalShutdownHook/gsh_common.h"
 
 /* 用户态 Windows.h 未定义 NT_SUCCESS，手动定义 */
 #ifndef NT_SUCCESS
