@@ -370,6 +370,7 @@ static void PrintHelp(const char *progName)
     printf("  shutdown_now        Force immediate shutdown (needs unlock + password)\n");
     printf("  query_status        Show lock state and stats (no password)\n");
     printf("  init                Load driver via GDRVLoader + start background service\n");
+    printf("  quit                Unhook + unload driver + exit BgSrv (needs password)\n");
     printf("  help                Show this help\n");
     printf("\nNote: Run as Administrator for full functionality.\n");
 }
@@ -383,6 +384,7 @@ static int CmdRmPass(HANDLE hDriver);
 static int CmdShutdownNow(HANDLE hDriver);
 static int CmdQueryStatus(HANDLE hDriver);
 static int CmdInit(VOID);
+static int CmdQuit(HANDLE hDriver);
 
 int main(int argc, char *argv[])
 {
@@ -444,6 +446,8 @@ int main(int argc, char *argv[])
         ret = CmdShutdownNow(hDriver);
     } else if (strcmp(cmd, "query_status") == 0) {
         ret = CmdQueryStatus(hDriver);
+    } else if (strcmp(cmd, "quit") == 0) {
+        ret = CmdQuit(hDriver);
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         PrintHelp(argv[0]);
@@ -665,5 +669,61 @@ static int CmdInit(VOID)
 
     printf("\n[OK] GlobalShutdownHook initialized.\n");
     printf("     Use 'query_status' to check driver state.\n");
+    return 0;
+}
+
+/* ---- quit（需密码：unhook + 卸载驱动 + 退出 BgSrv） ---- */
+static int CmdQuit(HANDLE hDriver)
+{
+    /* 1. 密码验证（通过 UNLOCK IOCTL，密码错误则拒绝） */
+    WCHAR password[GSH_MAX_PASS_LEN];
+    ReadPassword("Enter password: ", password, GSH_MAX_PASS_LEN);
+
+    DWORD bytesReturned;
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK,
+                         password, (DWORD)(wcslen(password) + 1) * sizeof(WCHAR),
+                         NULL, 0, &bytesReturned, NULL)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED) {
+            fprintf(stderr, "QUIT failed: wrong password.\n");
+        } else {
+            fprintf(stderr, "QUIT failed (password verify): %lu\n", err);
+        }
+        return 1;
+    }
+    printf("[1/3] Password verified. Driver UNLOCKED.\n");
+
+    /* 2. 删除所有 Hook */
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_UNHOOK_ALL,
+                         NULL, 0, NULL, 0, &bytesReturned, NULL)) {
+        fprintf(stderr, "[WARN] UNHOOK_ALL failed: %lu (continuing to unload driver)\n", GetLastError());
+    } else {
+        printf("[2/3] All hooks removed.\n");
+    }
+
+    /* 3. 卸载驱动（BgSrv 检测到驱动不可用后自动安全退出） */
+    WCHAR driverPath[MAX_PATH];
+    DWORD len = GetModuleFileNameW(NULL, driverPath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        fprintf(stderr, "[ERROR] GetModuleFileName failed.\n");
+        return 1;
+    }
+    WCHAR* lastSlash = wcsrchr(driverPath, L'\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = L'\0';
+        wcscat_s(driverPath, MAX_PATH, L"GlobalShutdownHook.sys");
+    }
+
+    printf("[3/3] Unloading driver...\n");
+    int rc = GdrvUnloadDriver(driverPath);
+    if (rc != 0) {
+        unsigned long ntStatus = GdrvGetLastStatus();
+        fprintf(stderr, "[WARN] GdrvUnloadDriver returned %d (NTSTATUS=0x%lX). Driver may need manual removal.\n", rc, ntStatus);
+    } else {
+        printf("[OK] Driver unloaded successfully.\n");
+    }
+
+    printf("\n[DONE] GlobalShutdownHook shutdown complete.\n");
+    printf("       Background service will exit automatically (detected driver unload).\n");
     return 0;
 }

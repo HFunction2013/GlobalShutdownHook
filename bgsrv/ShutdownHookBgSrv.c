@@ -174,6 +174,78 @@ static DWORD PrepareForUIAccess(VOID)
     return dwErr;
 }
 
+/* ============================================================
+ *  Critical 进程模块
+ *
+ *  原理：调用 ntdll!RtlSetProcessIsCritical(TRUE) 将自身标记为
+ *  关键系统进程。关键进程被终止（包括任务管理器结束进程）会触发
+ *  BSOD (CRITICAL_PROCESS_DIED)，从而实现"不允许退出"。
+ *
+ *  退出条件：仅当驱动被卸载（CreateFile 失败）时，BgSrv 自动调用
+ *  RtlSetProcessIsCritical(FALSE) 取消关键标记，然后安全退出。
+ *
+ *  需要 SE_DEBUG_PRIVILEGE 权限。
+ * ============================================================ */
+
+typedef NTSTATUS (NTAPI *PFN_RtlSetProcessIsCritical)(
+    IN BOOLEAN NewValue,
+    OUT PBOOLEAN OldValue OPTIONAL,
+    IN BOOLEAN NeedBreaks
+);
+
+static volatile BOOL g_bIsCritical = FALSE;
+
+/* 启用调试权限（RtlSetProcessIsCritical 需要） */
+static BOOL EnableDebugPrivilege(VOID)
+{
+    HANDLE hToken = NULL;
+    LUID debugLuid = {0};
+    TOKEN_PRIVILEGES tp = {0};
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return FALSE;
+
+    if (!LookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &debugLuid)) {
+        CloseHandle(hToken);
+        return FALSE;
+    }
+
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = debugLuid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    BOOL ok = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    CloseHandle(hToken);
+    return ok;
+}
+
+/* 设置/取消关键进程标记 */
+static BOOL SetProcessCritical(BOOL bCritical)
+{
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) return FALSE;
+
+    PFN_RtlSetProcessIsCritical pfn = (PFN_RtlSetProcessIsCritical)
+        GetProcAddress(hNtdll, "RtlSetProcessIsCritical");
+    if (!pfn) return FALSE;
+
+    NTSTATUS status = pfn(bCritical, NULL, FALSE);
+    if (NT_SUCCESS(status)) {
+        g_bIsCritical = bCritical;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* 安全退出：先取消 Critical，再退出进程 */
+static void SafeExitProcess(UINT uExitCode)
+{
+    if (g_bIsCritical) {
+        SetProcessCritical(FALSE);
+    }
+    ExitProcess(uExitCode);
+}
+
 /* ---- Overlay 窗口常量 ---- */
 #define OVERLAY_WIDTH       310
 #define OVERLAY_HEIGHT      190
@@ -194,6 +266,7 @@ static HFONT     g_hTitleFont = NULL;
 static HANDLE    g_hDriver = INVALID_HANDLE_VALUE;
 static ULONG     g_lastLockState = 0xFFFFFFFF;
 static ULONG     g_localBlockedCount = 0;  /* BgSrv 本地辅助统计 */
+static BOOL      g_bDriverWasAvailable = FALSE;  /* 跟踪驱动是否之前可用 */
 
 /* 最新驱动状态缓存 */
 static GSH_LOCK_STATUS g_currentStatus = {0};
@@ -342,10 +415,23 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     case WM_TIMER:
         if (wParam == TIMER_OVERLAY_ID) {
             ULONG oldState = g_currentStatus.LockState;
-            QueryDriverStatus();
+            BOOL driverOk = QueryDriverStatus();
+
+            /* ===== 驱动被卸载检测 =====
+             * 如果之前驱动可用但现在不可用，说明驱动刚被卸载（通过 quit 命令）。
+             * 此时取消 Critical 标记并安全退出（这是唯一允许的退出途径）。
+             */
+            if (!driverOk && g_bDriverWasAvailable) {
+                OutputDebugStringW(L"[GSH BgSrv] Driver unloaded, exiting safely (removing CRITICAL flag).\n");
+                SafeExitProcess(0);
+                return 0;  /* 不会到达 */
+            }
+            if (driverOk) {
+                g_bDriverWasAvailable = TRUE;
+            }
 
             /* 检测 LOCKED 状态变化：UNLOCKED -> LOCKED 时弹窗+计数 */
-            if (g_currentStatus.LockState == GSH_LOCKED && oldState != GSH_LOCKED
+            if (driverOk && g_currentStatus.LockState == GSH_LOCKED && oldState != GSH_LOCKED
                 && g_lastLockState != GSH_LOCKED) {
                 g_localBlockedCount++;
                 MessageBoxW(NULL,
@@ -377,13 +463,13 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         break;
     }
 
-    /* 右键菜单 */
+    /* 右键菜单（仅 Hide，无 Exit —— Critical 进程不允许手动退出） */
     case WM_RBUTTONUP: {
         POINT pt;
         GetCursorPos(&pt);
         HMENU hMenu = CreatePopupMenu();
         AppendMenuW(hMenu, MF_STRING, 1, L"&Hide overlay");
-        AppendMenuW(hMenu, MF_STRING, 2, L"E&xit");
+        AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 2, L"Exit (disabled - driver must be unloaded first)");
         SetForegroundWindow(hWnd);
         TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
         DestroyMenu(hMenu);
@@ -393,10 +479,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     case WM_COMMAND:
         if (LOWORD(wParam) == 1) {
             ShowWindow(hWnd, SW_HIDE);
-        } else if (LOWORD(wParam) == 2) {
-            DestroyWindow(hWnd);
-            if (g_hTrayWnd) DestroyWindow(g_hTrayWnd);
         }
+        /* wParam == 2 (Exit) 已禁用，不做任何处理 */
         break;
 
     case WM_DESTROY:
@@ -407,7 +491,8 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             CloseHandle(g_hDriver);
             g_hDriver = INVALID_HANDLE_VALUE;
         }
-        PostQuitMessage(0);
+        /* 窗口被销毁时也必须取消 Critical，否则进程退出会蓝屏 */
+        SafeExitProcess(0);
         break;
 
     default:
@@ -452,7 +537,7 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
             AppendMenuW(hMenu, MF_STRING, 1, L"Show/&Hide overlay");
-            AppendMenuW(hMenu, MF_STRING, 2, L"E&xit");
+            AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 2, L"Exit (disabled - driver must be unloaded first)");
             SetForegroundWindow(hWnd);
             TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
             DestroyMenu(hMenu);
@@ -466,11 +551,8 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             } else {
                 ShowWindow(g_hOverlayWnd, SW_SHOW);
             }
-        } else if (LOWORD(wParam) == 2) {
-            Shell_NotifyIconW(NIM_DELETE, &g_nid);
-            DestroyWindow(g_hOverlayWnd);
-            DestroyWindow(hWnd);
         }
+        /* wParam == 2 (Exit) 已禁用，不做任何处理 */
         break;
 
     case WM_DESTROY:
@@ -508,6 +590,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         WCHAR dbgMsg[256];
         swprintf_s(dbgMsg, 256, L"[GSH BgSrv] UIAccess failed (0x%lX), falling back to TOPMOST.\n", uiAccessResult);
         OutputDebugStringW(dbgMsg);
+    }
+
+    /* ===== 设置自身为 Critical 进程（退出即 BSOD，实现"不允许退出"） ===== */
+    if (EnableDebugPrivilege()) {
+        if (SetProcessCritical(TRUE)) {
+            OutputDebugStringW(L"[GSH BgSrv] Process set to CRITICAL. Termination will cause BSOD.\n");
+        } else {
+            OutputDebugStringW(L"[GSH BgSrv] WARNING: Failed to set process CRITICAL.\n");
+        }
+    } else {
+        OutputDebugStringW(L"[GSH BgSrv] WARNING: Failed to enable debug privilege, cannot set CRITICAL.\n");
     }
 
     /* ---- 注册 Overlay 窗口类 ---- */
