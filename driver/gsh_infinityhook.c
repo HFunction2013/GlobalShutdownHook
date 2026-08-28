@@ -56,7 +56,25 @@ typedef struct _EVENT_TRACE_PROPERTIES {
     ULONG LoggerNameOffset;
 } EVENT_TRACE_PROPERTIES, *PEVENT_TRACE_PROPERTIES;
 
-typedef struct _CKCL_TRACE_PROPERTIES : EVENT_TRACE_PROPERTIES {
+typedef struct _CKCL_TRACE_PROPERTIES {
+    WNODE_HEADER Wnode;
+    ULONG BufferSize;
+    ULONG MinimumBuffers;
+    ULONG MaximumBuffers;
+    ULONG MaximumFileSize;
+    ULONG LogFileMode;
+    ULONG FlushTimer;
+    ULONG EnableFlags;
+    union { LONG AgeLimit; LONG FlushThreshold; } DUMMYUNIONNAME;
+    ULONG NumberOfBuffers;
+    ULONG FreeBuffers;
+    ULONG EventsLost;
+    ULONG BuffersWritten;
+    ULONG LogBuffersLost;
+    ULONG RealTimeBuffersLost;
+    HANDLE LoggerThreadId;
+    ULONG LogFileNameOffset;
+    ULONG LoggerNameOffset;
     ULONG64 Unknown[3];
     UNICODE_STRING ProviderName;
 } CKCL_TRACE_PROPERTIES, *PCKCL_TRACE_PROPERTIES;
@@ -345,7 +363,7 @@ static NTSTATUS NTAPI HookNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS Exit
     /* 检查目标进程是否是 BgSrv */
     if (ProcessHandle != NULL && ProcessHandle != (HANDLE)-1 && g_BgSrvPid != NULL) {
         PEPROCESS pProc = NULL;
-        if (NT_SUCCESS(ObReferenceObjectByHandle(ProcessHandle, PROCESS_QUERY_INFORMATION,
+        if (NT_SUCCESS(ObReferenceObjectByHandle(ProcessHandle, 0x1000,
                                                    *PsProcessType, KernelMode, &pProc, NULL))) {
             HANDLE pid = PsGetProcessId(pProc);
             ObDereferenceObject(pProc);
@@ -443,10 +461,12 @@ static VOID InfinityHookStop(VOID)
 static NTSTATUS InfinityHookInit(VOID)
 {
     /* 获取未文档化函数 */
+    UNICODE_STRING nameNtTraceControl = RTL_CONSTANT_STRING(L"NtTraceControl");
+    UNICODE_STRING nameZwQuerySysInfo = RTL_CONSTANT_STRING(L"ZwQuerySystemInformation");
     g_pNtTraceControl = (PFN_NtTraceControl)
-        MmGetSystemRoutineAddress(L"NtTraceControl");
+        MmGetSystemRoutineAddress(&nameNtTraceControl);
     g_pZwQuerySystemInformation = (PFN_ZwQuerySystemInformation)
-        MmGetSystemRoutineAddress(L"ZwQuerySystemInformation");
+        MmGetSystemRoutineAddress(&nameZwQuerySysInfo);
 
     if (!g_pNtTraceControl || !g_pZwQuerySystemInformation) {
         DbgPrint("GSH: InfinityHook init failed: cannot resolve NtTraceControl/ZwQuerySystemInformation\n");
@@ -454,10 +474,14 @@ static NTSTATUS InfinityHookInit(VOID)
     }
 
     /* 获取目标函数地址 */
-    g_pNtUnloadDriver = MmGetSystemRoutineAddress(L"NtUnloadDriver");
-    g_pNtTerminateProcess = MmGetSystemRoutineAddress(L"NtTerminateProcess");
-    g_pNtShutdownSystem = MmGetSystemRoutineAddress(L"NtShutdownSystem");
-    g_pNtInitiatePowerAction = MmGetSystemRoutineAddress(L"NtInitiatePowerAction");
+    UNICODE_STRING nameUnload = RTL_CONSTANT_STRING(L"NtUnloadDriver");
+    UNICODE_STRING nameTerminate = RTL_CONSTANT_STRING(L"NtTerminateProcess");
+    UNICODE_STRING nameShutdown = RTL_CONSTANT_STRING(L"NtShutdownSystem");
+    UNICODE_STRING namePowerAction = RTL_CONSTANT_STRING(L"NtInitiatePowerAction");
+    g_pNtUnloadDriver = MmGetSystemRoutineAddress(&nameUnload);
+    g_pNtTerminateProcess = MmGetSystemRoutineAddress(&nameTerminate);
+    g_pNtShutdownSystem = MmGetSystemRoutineAddress(&nameShutdown);
+    g_pNtInitiatePowerAction = MmGetSystemRoutineAddress(&namePowerAction);
 
     DbgPrint("GSH: Target addresses: Unload=%p Terminate=%p Shutdown=%p PowerAction=%p\n",
              g_pNtUnloadDriver, g_pNtTerminateProcess, g_pNtShutdownSystem, g_pNtInitiatePowerAction);
