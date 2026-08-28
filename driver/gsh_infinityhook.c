@@ -292,8 +292,12 @@ static PVOID FindPatternInNtos(PVOID ntosBase, const UCHAR *pattern, const CHAR 
 }
 
 /* 获取 SSDT (KiServiceTable) 基址 */
+/* TODO: 特征码搜索暂时禁用，防止蓝屏。后续改用安全方式获取 KiServiceTable */
 static PVOID GetSyscallTable(PVOID ntosBase)
 {
+    UNREFERENCED_PARAMETER(ntosBase);
+    return NULL;
+#if 0
     /* 特征码: 4C 8D 15 ?? ?? ?? ??  (lea r10, KiServiceTable) */
     UCHAR pattern[] = { 0x4C, 0x8D, 0x15, 0x00, 0x00, 0x00, 0x00 };
     CHAR mask[] = "xxx????";
@@ -606,12 +610,16 @@ static NTSTATUS InfinityHookInit(VOID)
     DbgPrint("GSH: InfinityHook: ntoskrnl base %p\n", ntosBase);
     if (!ntosBase) return STATUS_UNSUCCESSFUL;
 
-    /* 特征码搜索 EtwpDebuggerData */
+    /* TODO: 特征码搜索 EtwpDebuggerData - 暂时禁用，防止访问无效内存导致蓝屏
+     * 原因: FindPattern 在 ntoskrnl 中搜索时可能访问未映射内存页
+     * 修复方案: 后续改用更安全的方式获取 EtwpDebuggerData (如从已知导出符号偏移)
     UCHAR etwpPattern[] = { 0x00, 0x00, 0x2c, 0x08, 0x04, 0x38, 0x0c };
     CHAR etwpMask[] = "??xxxxx";
     g_EtwpDebuggerData = FindPatternInNtos(ntosBase, etwpPattern, etwpMask);
-    DbgPrint("GSH: InfinityHook: EtwpDebuggerData %p\n", g_EtwpDebuggerData);
-    if (!g_EtwpDebuggerData) return STATUS_UNSUCCESSFUL;
+    */
+    g_EtwpDebuggerData = NULL;
+    DbgPrint("GSH: InfinityHook: EtwpDebuggerData pattern search DISABLED (TODO)\n");
+    if (!g_EtwpDebuggerData) return STATUS_NOT_SUPPORTED;
 
     /* 获取 CkclWmiLoggerContext */
     PVOID *pSilo = *(PVOID **)((PUCHAR)g_EtwpDebuggerData + 0x10);
