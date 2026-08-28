@@ -116,10 +116,31 @@ typedef NTSTATUS(NTAPI* NtInitiatePowerAction_t)(
 
 static NTSTATUS NTAPI FakeNtUnloadDriver(PUNICODE_STRING DriverServiceName)
 {
-    UNREFERENCED_PARAMETER(DriverServiceName);
-    InterlockedIncrement(&g_BlockedCount);
-    DbgPrintEx(0, 0, "[Auxiliary] Blocked NtUnloadDriver\n");
-    return STATUS_ACCESS_DENIED;
+    /* 只阻止卸载我们自己的两个驱动: Auxiliary.sys 和 GlobalShutdownHook.sys */
+    if (DriverServiceName && DriverServiceName->Buffer && DriverServiceName->Length > 0)
+    {
+        /* 分配临时缓冲区用于大小写不敏感比较 */
+        USHORT len = DriverServiceName->Length;
+        PWCHAR buf = (PWCHAR)ExAllocatePoolWithTag(NonPagedPool, len + sizeof(WCHAR), 'AuxU');
+        if (buf)
+        {
+            RtlZeroMemory(buf, len + sizeof(WCHAR));
+            RtlCopyMemory(buf, DriverServiceName->Buffer, len);
+
+            /* 大小写不敏感检查是否包含我们的驱动名 */
+            if (wcsstr(buf, L"Auxiliary") || wcsstr(buf, L"GlobalShutdownHook"))
+            {
+                ExFreePoolWithTag(buf, 'AuxU');
+                InterlockedIncrement(&g_BlockedCount);
+                DbgPrintEx(0, 0, "[Auxiliary] Blocked NtUnloadDriver: %wZ\n", DriverServiceName);
+                return STATUS_ACCESS_DENIED;
+            }
+            ExFreePoolWithTag(buf, 'AuxU');
+        }
+    }
+
+    /* 其他驱动正常卸载 */
+    return ((NtUnloadDriver_t)g_OriginalNtUnloadDriver)(DriverServiceName);
 }
 
 static NTSTATUS NTAPI FakeNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
