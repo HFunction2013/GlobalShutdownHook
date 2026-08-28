@@ -296,17 +296,8 @@ static PVOID FindPatternInNtos(PVOID ntosBase, const UCHAR *pattern, const CHAR 
 static PVOID GetSyscallTable(PVOID ntosBase)
 {
     UNREFERENCED_PARAMETER(ntosBase);
+    /* TODO: 特征码搜索暂时禁用，防止蓝屏。后续改用安全方式获取 KiServiceTable */
     return NULL;
-#if 0
-    /* 特征码: 4C 8D 15 ?? ?? ?? ??  (lea r10, KiServiceTable) */
-    UCHAR pattern[] = { 0x4C, 0x8D, 0x15, 0x00, 0x00, 0x00, 0x00 };
-    CHAR mask[] = "xxx????";
-    PVOID found = FindPatternInNtos(ntosBase, pattern, mask);
-    if (!found) return NULL;
-
-    /* 计算 RIP 相对地址 */
-    LONG offset = *(PLONG)((PUCHAR)found + 3);
-    return (PVOID)((PUCHAR)found + 7 + offset);
 }
 
 /* ============================================================

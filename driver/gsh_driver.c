@@ -135,11 +135,15 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     /* 6. 枚举现存进程并入队 */
     NotifyEnumerateProcesses();
 
-    /* 7. 初始化 InfinityHook 系统调用拦截 (NtUnloadDriver/NtTerminateProcess/NtShutdownSystem/NtInitiatePowerAction) */
+#if 0
+    /* TODO: InfinityHook 全局禁用 - 特征码搜索导致蓝屏，后续修复后再启用 */
     status = InfinityHookInitialize();
     if (!NT_SUCCESS(status)) {
         DbgPrint("GSH: InfinityHookInitialize failed: 0x%X (continuing without syscall hook)\n", status);
     }
+#else
+    DbgPrint("GSH: InfinityHook globally disabled (TODO: fix pattern search BSOD)\n");
+#endif
 
     DbgPrint("GSH: Driver loaded successfully\n");
     return STATUS_SUCCESS;
@@ -152,8 +156,10 @@ VOID GshUnload(PDRIVER_OBJECT DriverObject)
 
     DbgPrint("GSH: Unloading driver\n");
 
-    /* 0. 先停止 InfinityHook (否则 NtUnloadDriver 会被自己拦截) */
+#if 0
+    /* TODO: InfinityHook 全局禁用 */
     InfinityHookShutdown();
+#endif
 
     /* 1. 停止接收新镜像通知 */
     NotifyUnregister();
