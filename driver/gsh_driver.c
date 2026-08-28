@@ -20,6 +20,9 @@ typedef enum _SHUTDOWN_ACTION {
 typedef NTSTATUS (NTAPI *PFN_ZW_SHUTDOWN_SYSTEM)(_In_ SHUTDOWN_ACTION Action);
 static PFN_ZW_SHUTDOWN_SYSTEM g_pfnZwShutdownSystem = NULL;
 
+/* 被拦截的关机次数统计（inline hook 不回调驱动，当前通过 BgSrv 辅助统计） */
+static volatile ULONG g_BlockedCount = 0;
+
 /* ---- 前置声明 ---- */
 DRIVER_INITIALIZE DriverEntry;
 DRIVER_UNLOAD     GshUnload;
@@ -475,6 +478,7 @@ static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp)
     status->HookedCount = hooked;
     status->FailedCount = failed;
     status->PendingCount = pending;
+    status->BlockedCount = g_BlockedCount;
     Irp->IoStatus.Information = sizeof(GSH_LOCK_STATUS);
     return STATUS_SUCCESS;
 }

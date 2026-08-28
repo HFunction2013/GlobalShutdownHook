@@ -206,7 +206,8 @@ typedef struct _GSH_LOCK_STATUS {
     ULONG HookedCount;
     ULONG FailedCount;
     ULONG PendingCount;
-    ULONG Reserved[3];
+    ULONG BlockedCount;    /* 被拦截的关机次数统计 */
+    ULONG Reserved[2];
 } GSH_LOCK_STATUS, *PGSH_LOCK_STATUS;
 
 #pragma pack(pop)
