@@ -145,7 +145,7 @@ void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID* pSsdtAddress)
  *  获取 syscall 函数地址
  * ============================================================ */
 
-static BOOL GetSyscallAddresses()
+static bool GetSyscallAddresses()
 {
     UNICODE_STRING str;
 
