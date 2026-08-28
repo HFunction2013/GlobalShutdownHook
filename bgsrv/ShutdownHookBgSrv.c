@@ -19,6 +19,11 @@
 #include <tlhelp32.h>
 #include "../driver/gsh_common.h"
 
+/* 用户态 Windows.h 未定义 NT_SUCCESS，手动定义 */
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+
 /* ============================================================
  *  UIAccess 提权模块（参考 killtimer0/uiaccess + arcanine300/CreateWindowInBand）
  *
