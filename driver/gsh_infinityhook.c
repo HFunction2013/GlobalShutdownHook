@@ -110,6 +110,58 @@ typedef struct _SYSTEM_MODULE_INFORMATION {
 } SYSTEM_MODULE_INFORMATION, *PSYSTEM_MODULE_INFORMATION;
 
 typedef void (__fastcall *INFINITY_CALLBACK)(ULONG nCallIndex, PVOID *pCallAddress);
+
+/* ============================================================
+ *  跨版本 syscall 号查找表 (从 nt-per-syscall.json 自动生成)
+ *  支持 Windows 10 1507 到 Windows 11 24H2 / Server 2025
+ * ============================================================ */
+typedef struct _SYSCALL_LOOKUP_ENTRY {
+    ULONG BuildNumber;
+    ULONG NtUnloadDriver;
+    ULONG NtTerminateProcess;
+    ULONG NtShutdownSystem;
+    ULONG NtInitiatePowerAction;
+} SYSCALL_LOOKUP_ENTRY, *PSYSCALL_LOOKUP_ENTRY;
+
+static const SYSCALL_LOOKUP_ENTRY g_SyscallLookupTable[] = {
+    { 10240, 425, 44, 408, 241 },
+    { 10586, 428, 44, 411, 243 },
+    { 14393, 434, 44, 417, 245 },
+    { 15063, 440, 44, 423, 248 },
+    { 16299, 444, 44, 426, 249 },
+    { 17134, 446, 44, 428, 250 },
+    { 17763, 447, 44, 429, 251 },
+    { 18362, 448, 44, 430, 252 },
+    { 18363, 448, 44, 430, 252 },
+    { 19041, 454, 44, 436, 257 },
+    { 19042, 454, 44, 436, 257 },
+    { 19043, 454, 44, 436, 257 },
+    { 19044, 456, 44, 438, 258 },
+    { 19045, 456, 44, 438, 258 },
+    { 20348, 462, 44, 444, 262 },
+    { 22000, 466, 44, 447, 263 },
+    { 22621, 470, 44, 451, 264 },
+    { 22631, 470, 44, 451, 264 },
+    { 25398, 472, 44, 453, 265 },
+    { 26100, 473, 44, 454, 266 },
+};
+static const ULONG g_SyscallLookupCount = 20;
+
+/* 根据 build number 查找最接近的 syscall 表项 (向下取整) */
+static const SYSCALL_LOOKUP_ENTRY* SyscallFindEntry(ULONG buildNumber)
+{
+    const SYSCALL_LOOKUP_ENTRY* best = NULL;
+    for (ULONG i = 0; i < g_SyscallLookupCount; i++) {
+        if (g_SyscallLookupTable[i].BuildNumber <= buildNumber) {
+            best = &g_SyscallLookupTable[i];
+        } else {
+            break;
+        }
+    }
+    return best;
+}
+
+
 typedef NTSTATUS (NTAPI *PFN_NtTraceControl)(ULONG, PVOID, ULONG, PVOID, ULONG, PULONG);
 typedef NTSTATUS (NTAPI *PFN_ZwQuerySystemInformation)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 
@@ -486,11 +538,22 @@ static NTSTATUS InfinityHookInit(VOID)
     DbgPrint("GSH: Target addresses: Unload=%p Terminate=%p Shutdown=%p PowerAction=%p\n",
              g_pNtUnloadDriver, g_pNtTerminateProcess, g_pNtShutdownSystem, g_pNtInitiatePowerAction);
 
-    /* 如果 MmGetSystemRoutineAddress 获取失败，使用硬编码 syscall 号（Win10 22H2 / Win11 22H2 通用值） */
-    if (!g_pNtUnloadDriver) g_syscallNtUnloadDriver = 456;
-    if (!g_pNtTerminateProcess) g_syscallNtTerminateProcess = 44;
-    if (!g_pNtShutdownSystem) g_syscallNtShutdownSystem = 438;
-    if (!g_pNtInitiatePowerAction) g_syscallNtInitiatePowerAction = 258;
+    /* 如果 MmGetSystemRoutineAddress 获取失败，从跨版本查找表中根据 build number 获取 syscall 号 */
+    if (!g_pNtUnloadDriver || !g_pNtTerminateProcess ||
+        !g_pNtShutdownSystem || !g_pNtInitiatePowerAction) {
+        const SYSCALL_LOOKUP_ENTRY* entry = SyscallFindEntry(g_BuildNumber);
+        if (entry) {
+            if (!g_pNtUnloadDriver) g_syscallNtUnloadDriver = entry->NtUnloadDriver;
+            if (!g_pNtTerminateProcess) g_syscallNtTerminateProcess = entry->NtTerminateProcess;
+            if (!g_pNtShutdownSystem) g_syscallNtShutdownSystem = entry->NtShutdownSystem;
+            if (!g_pNtInitiatePowerAction) g_syscallNtInitiatePowerAction = entry->NtInitiatePowerAction;
+            DbgPrint("GSH: Syscall lookup for build %lu: Unload=%lu Terminate=%lu Shutdown=%lu PowerAction=%lu\n",
+                     g_BuildNumber, g_syscallNtUnloadDriver, g_syscallNtTerminateProcess,
+                     g_syscallNtShutdownSystem, g_syscallNtInitiatePowerAction);
+        } else {
+            DbgPrint("GSH: WARNING: No syscall lookup entry for build %lu\n", g_BuildNumber);
+        }
+    }
 
     /* 启用 CKCL syscall trace */
     if (!NT_SUCCESS(EventTraceControl(EtwpUpdateTrace))) {
