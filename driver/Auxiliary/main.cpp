@@ -394,6 +394,12 @@ static NTSTATUS AuxIoctlDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     case IOCTL_AUX_SHUTDOWN:
         DbgPrintEx(0, 0, "[Auxiliary] IOCTL_AUX_SHUTDOWN\n");
         KHook::Stop();
+        /* 等待所有 CPU 退出 hook 回调 */
+        {
+            LARGE_INTEGER delay;
+            delay.QuadPart = -200 * 10000;
+            KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        }
         break;
 
     case IOCTL_AUX_GET_BLOCKED_COUNT:
@@ -459,6 +465,17 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
 
     /* 停止 InfinityHook */
     KHook::Stop();
+
+    /* 等待所有 CPU 退出 hook 回调，避免卸载后仍有 CPU 执行已释放的回调
+     * GetCpuClock 恢复后，已进入回调的 CPU 可能仍在执行 InfinityCallback。
+     * 等待 200ms 确保所有并发实例退出。
+     */
+    {
+        LARGE_INTEGER delay;
+        delay.QuadPart = -200 * 10000;  /* 200ms，单位 100ns，负数表示相对时间 */
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    }
+    DbgPrintEx(0, 0, "[Auxiliary] Waited 200ms for all CPUs to exit hook callback\n");
 
     /* 删除符号链接和设备对象 */
     if (g_DosDeviceName.Buffer)
