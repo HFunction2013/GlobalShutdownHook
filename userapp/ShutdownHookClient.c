@@ -704,19 +704,12 @@ static int CmdInit(VOID)
         printf("[OK] Auxiliary.sys loaded (InfinityHook syscall interceptor).\n");
         Sleep(1000);
 
-        /* 5. 初始化 Auxiliary (InfinityHook) */
+        /* 5. 设置 BgSrv PID 到 Auxiliary (KHook 在 DriverEntry 中已自动启动) */
         HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hAux != INVALID_HANDLE_VALUE) {
             DWORD auxBytes = 0;
-            if (DeviceIoControl(hAux, IOCTL_AUX_INITIALIZE, NULL, 0, NULL, 0, &auxBytes, NULL)) {
-                printf("[OK] Auxiliary InfinityHook initialized.\n");
-            } else {
-                fprintf(stderr, "[WARN] Auxiliary initialize failed: %lu\n", GetLastError());
-            }
-
-            /* 6. 设置 BgSrv PID 到 Auxiliary */
             if (pi.hProcess) {
                 HANDLE bgSrvPid = (HANDLE)(ULONG_PTR)pi.dwProcessId;
                 DeviceIoControl(hAux, IOCTL_AUX_SET_BGSRV_PID, &bgSrvPid, sizeof(bgSrvPid),

@@ -378,19 +378,6 @@ static NTSTATUS AuxIoctlDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 
     switch (irpSp->Parameters.DeviceIoControl.IoControlCode)
     {
-    case IOCTL_AUX_INITIALIZE:
-        DbgPrintEx(0, 0, "[Auxiliary] IOCTL_AUX_INITIALIZE\n");
-        if (!GetSyscallAddresses())
-        {
-            status = STATUS_NOT_FOUND;
-            break;
-        }
-        if (!KHook::Initialize(InfinityCallback) || !KHook::Start())
-        {
-            status = STATUS_UNSUCCESSFUL;
-        }
-        break;
-
     case IOCTL_AUX_SHUTDOWN:
         DbgPrintEx(0, 0, "[Auxiliary] IOCTL_AUX_SHUTDOWN\n");
         KHook::Stop();
@@ -536,6 +523,37 @@ DriverEntry(
         return status;
     }
 
-    DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys loaded successfully\n");
+    DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys loaded, initializing InfinityHook...\n");
+
+    /* 直接在 DriverEntry 中初始化并启动 KHook，不需要单独的 IOCTL */
+    if (!GetSyscallAddresses())
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] GetSyscallAddresses failed\n");
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        IoDeleteDevice(g_DeviceObject);
+        return STATUS_NOT_FOUND;
+    }
+
+    if (!KHook::Initialize(InfinityCallback))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] KHook::Initialize failed\n");
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        IoDeleteDevice(g_DeviceObject);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    if (!KHook::Start())
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] KHook::Start failed\n");
+        KHook::Stop();
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        IoDeleteDevice(g_DeviceObject);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    DbgPrintEx(0, 0, "[Auxiliary] InfinityHook started successfully\n");
     return STATUS_SUCCESS;
 }
