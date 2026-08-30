@@ -104,7 +104,11 @@ PsGetProcessImageFileName(
 #define FUNC_EXIT_WINDOWS_EX                0
 #define FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A  1
 #define FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W  2
-#define FUNC_COUNT                          3
+#define FUNC_INITIATE_SHUTDOWN_A            3
+#define FUNC_INITIATE_SHUTDOWN_W            4
+#define FUNC_INITIATE_SYSTEM_SHUTDOWN_A     5
+#define FUNC_INITIATE_SYSTEM_SHUTDOWN_W     6
+#define FUNC_COUNT                          7
 
 /* ---- Hook 状态 ---- */
 #define HOOK_STATE_NONE       0

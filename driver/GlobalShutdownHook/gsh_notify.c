@@ -70,6 +70,10 @@ static VOID EnqueueForModule(HANDLE Pid, PCWSTR ModuleName)
     } else if (wcscmp(ModuleName, L"advapi32.dll") == 0) {
         WorkerEnqueue(Pid, ModuleName, FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A);
         WorkerEnqueue(Pid, ModuleName, FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W);
+        WorkerEnqueue(Pid, ModuleName, FUNC_INITIATE_SHUTDOWN_A);
+        WorkerEnqueue(Pid, ModuleName, FUNC_INITIATE_SHUTDOWN_W);
+        WorkerEnqueue(Pid, ModuleName, FUNC_INITIATE_SYSTEM_SHUTDOWN_A);
+        WorkerEnqueue(Pid, ModuleName, FUNC_INITIATE_SYSTEM_SHUTDOWN_W);
     }
 }
 
@@ -120,10 +124,18 @@ static VOID EnqueueProcess(HANDLE Pid)
     StateFindOrCreate(Pid, L"user32.dll", FUNC_EXIT_WINDOWS_EX);
     StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A);
     StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W);
+    StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SHUTDOWN_A);
+    StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SHUTDOWN_W);
+    StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_A);
+    StateFindOrCreate(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_W);
     /* 入队由 Worker 实际执行 hook */
     WorkerEnqueue(Pid, L"user32.dll", FUNC_EXIT_WINDOWS_EX);
     WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A);
     WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W);
+    WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SHUTDOWN_A);
+    WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SHUTDOWN_W);
+    WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_A);
+    WorkerEnqueue(Pid, L"advapi32.dll", FUNC_INITIATE_SYSTEM_SHUTDOWN_W);
 }
 
 VOID NotifyEnumerateProcesses(VOID)

@@ -57,30 +57,42 @@ static NTSTATUS SafeWrite(PVOID Dst, PVOID Src, SIZE_T Size)
 PCWSTR HookGetFunctionName(ULONG FunctionId)
 {
     switch (FunctionId) {
-        case FUNC_EXIT_WINDOWS_EX:               return L"ExitWindowsEx";
-        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A: return L"InitiateSystemShutdownExA";
-        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W: return L"InitiateSystemShutdownExW";
-        default:                                 return L"Unknown";
+        case FUNC_EXIT_WINDOWS_EX:                return L"ExitWindowsEx";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A:  return L"InitiateSystemShutdownExA";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W:  return L"InitiateSystemShutdownExW";
+        case FUNC_INITIATE_SHUTDOWN_A:            return L"InitiateShutdownA";
+        case FUNC_INITIATE_SHUTDOWN_W:            return L"InitiateShutdownW";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_A:     return L"InitiateSystemShutdownA";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_W:     return L"InitiateSystemShutdownW";
+        default:                                   return L"Unknown";
     }
 }
 
 PCWSTR HookGetModuleName(ULONG FunctionId)
 {
     switch (FunctionId) {
-        case FUNC_EXIT_WINDOWS_EX:               return L"user32.dll";
-        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A: return L"advapi32.dll";
-        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W: return L"advapi32.dll";
-        default:                                 return L"unknown.dll";
+        case FUNC_EXIT_WINDOWS_EX:                return L"user32.dll";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A:  return L"advapi32.dll";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W:  return L"advapi32.dll";
+        case FUNC_INITIATE_SHUTDOWN_A:            return L"advapi32.dll";
+        case FUNC_INITIATE_SHUTDOWN_W:            return L"advapi32.dll";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_A:     return L"advapi32.dll";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_W:     return L"advapi32.dll";
+        default:                                   return L"unknown.dll";
     }
 }
 
 PCSTR HookGetExportName(ULONG FunctionId)
 {
     switch (FunctionId) {
-        case FUNC_EXIT_WINDOWS_EX:               return "ExitWindowsEx";
-        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A: return "InitiateSystemShutdownExA";
-        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W: return "InitiateSystemShutdownExW";
-        default:                                 return "";
+        case FUNC_EXIT_WINDOWS_EX:                return "ExitWindowsEx";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_A:  return "InitiateSystemShutdownExA";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_EX_W:  return "InitiateSystemShutdownExW";
+        case FUNC_INITIATE_SHUTDOWN_A:            return "InitiateShutdownA";
+        case FUNC_INITIATE_SHUTDOWN_W:            return "InitiateShutdownW";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_A:     return "InitiateSystemShutdownA";
+        case FUNC_INITIATE_SYSTEM_SHUTDOWN_W:     return "InitiateSystemShutdownW";
+        default:                                   return "";
     }
 }
 
