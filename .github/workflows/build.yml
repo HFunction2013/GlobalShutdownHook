@@ -2,7 +2,7 @@
 #  GlobalShutdownHook - GitHub Actions CI
 #
 #  - Build: Windows x64 (Release/Debug) with WDK
-#  - Artifacts: upload .sys + .exe
+#  - Artifacts: upload .sys + .exe + .pdb
 # ============================================================
 
 name: CI
@@ -108,17 +108,28 @@ jobs:
           }
 
       # --------------------------------------------------------
-      # Upload artifacts
+      # Upload artifacts - Binaries only
       # --------------------------------------------------------
-      - name: Upload artifacts
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalShutdownHook-${{ env.PLATFORM }}-${{ matrix.configuration }}
+          name: GlobalShutdownHook-${{ env.PLATFORM }}-${{ matrix.configuration }}-bin
           path: |
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/GlobalShutdownHook.sys
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/ShutdownHookClient.exe
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/ShutdownHookBgSrv.exe
             bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/Auxiliary.sys
-            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.pdb
           if-no-files-found: error
+          retention-days: 30
+
+      # --------------------------------------------------------
+      # Upload artifacts - PDB symbols only
+      # --------------------------------------------------------
+      - name: Upload PDB symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlobalShutdownHook-${{ env.PLATFORM }}-${{ matrix.configuration }}-pdb
+          path: |
+            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.pdb
+          if-no-files-found: warn
           retention-days: 30
