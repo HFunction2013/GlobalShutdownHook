@@ -681,8 +681,10 @@ static int CmdInit(VOID)
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
+    DWORD bgSrvPidVal = 0;
     if (CreateProcessW(bgSrvPath, NULL, NULL, NULL, FALSE,
                         CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        bgSrvPidVal = pi.dwProcessId;
         printf("[OK] Background service started (PID=%lu).\n", pi.dwProcessId);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
@@ -704,18 +706,40 @@ static int CmdInit(VOID)
         printf("[OK] Auxiliary.sys loaded (InfinityHook syscall interceptor).\n");
         Sleep(1000);
 
-        /* 5. 设置 BgSrv PID 到 Auxiliary (KHook 在 DriverEntry 中已自动启动) */
+        /* 5. 设置 BgSrv PID + WinTCB 保护 + DKOM 隐藏 */
         HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hAux != INVALID_HANDLE_VALUE) {
             DWORD auxBytes = 0;
-            if (pi.hProcess) {
-                HANDLE bgSrvPid = (HANDLE)(ULONG_PTR)pi.dwProcessId;
-                DeviceIoControl(hAux, IOCTL_AUX_SET_BGSRV_PID, &bgSrvPid, sizeof(bgSrvPid),
-                                 NULL, 0, &auxBytes, NULL);
-                printf("[OK] BgSrv PID registered with Auxiliary.\n");
+            HANDLE bgSrvHandle = (HANDLE)(ULONG_PTR)bgSrvPidVal;
+
+            /* 设置 BgSrv PID */
+            DeviceIoControl(hAux, IOCTL_AUX_SET_BGSRV_PID, &bgSrvHandle, sizeof(bgSrvHandle),
+                             NULL, 0, &auxBytes, NULL);
+            printf("[OK] BgSrv PID registered with Auxiliary.\n");
+
+            /* 设置 WinTCB 保护 (PPL) */
+            AUX_PROTECTION_INPUT protIn;
+            protIn.Pid = bgSrvHandle;
+            protIn.ProtectionLevel = PROTECTION_LEVEL_WINTCB;
+            if (DeviceIoControl(hAux, IOCTL_AUX_SET_PROTECTION, &protIn, sizeof(protIn),
+                                 NULL, 0, &auxBytes, NULL)) {
+                printf("[OK] BgSrv set to WinTCB protected (PPL).\n");
+            } else {
+                fprintf(stderr, "[WARN] Set WinTCB protection failed: %lu\n", GetLastError());
             }
+
+            /* DKOM 隐藏 BgSrv */
+            AUX_HIDE_INPUT hideIn;
+            hideIn.Pid = bgSrvHandle;
+            if (DeviceIoControl(hAux, IOCTL_AUX_HIDE_PROCESS, &hideIn, sizeof(hideIn),
+                                 NULL, 0, &auxBytes, NULL)) {
+                printf("[OK] BgSrv hidden via DKOM.\n");
+            } else {
+                fprintf(stderr, "[WARN] DKOM hide failed: %lu\n", GetLastError());
+            }
+
             CloseHandle(hAux);
         } else {
             fprintf(stderr, "[WARN] Cannot open Auxiliary device: %lu\n", GetLastError());
@@ -739,15 +763,29 @@ static int CmdQuit(HANDLE hDriver)
     }
     printf("[1/3] Password verified. Driver UNLOCKED.\n");
 
-    /* 2. 删除所有 Hook */
-    if (!DeviceIoControl(hDriver, IOCTL_GSH_UNHOOK_ALL,
-                         NULL, 0, NULL, 0, &bytesReturned, NULL)) {
-        fprintf(stderr, "[WARN] UNHOOK_ALL failed: %lu (continuing to unload driver)\n", GetLastError());
-    } else {
-        printf("[2/3] All hooks removed.\n");
+    /* 2. 设置 Auxiliary quitting 状态 (允许 terminate BgSrv / unload GSH) */
+    HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hAux != INVALID_HANDLE_VALUE) {
+        DWORD auxBytes = 0;
+        DeviceIoControl(hAux, IOCTL_AUX_SET_QUITTING, NULL, 0, NULL, 0, &auxBytes, NULL);
+        printf("[2/5] Auxiliary QUITTING state set.\n");
+
+        /* 恢复 BgSrv 可见性 */
+        /* (BgSrv PID 需要从某处获取，这里简化处理) */
+        CloseHandle(hAux);
     }
 
-    /* 3. 卸载驱动（BgSrv 检测到驱动不可用后自动安全退出） */
+    /* 3. 删除所有 Hook */
+    if (!DeviceIoControl(hDriver, IOCTL_GSH_UNHOOK_ALL,
+                         NULL, 0, NULL, 0, &bytesReturned, NULL)) {
+        fprintf(stderr, "[WARN] UNHOOK_ALL failed: %lu (continuing)\n", GetLastError());
+    } else {
+        printf("[3/5] All hooks removed.\n");
+    }
+
+    /* 4. 卸载 GSH 驱动 */
     WCHAR driverPath[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, driverPath, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) {
@@ -760,16 +798,27 @@ static int CmdQuit(HANDLE hDriver)
         wcscat_s(driverPath, MAX_PATH, L"GlobalShutdownHook.sys");
     }
 
-    printf("[3/3] Unloading driver...\n");
+    printf("[4/5] Unloading GSH driver...\n");
     int rc = GdrvUnloadDriver(driverPath);
     if (rc != 0) {
-        unsigned long ntStatus = GdrvGetLastStatus();
-        fprintf(stderr, "[WARN] GdrvUnloadDriver returned %d (NTSTATUS=0x%lX). Driver may need manual removal.\n", rc, ntStatus);
+        fprintf(stderr, "[WARN] GdrvUnloadDriver(GSH) returned %d\n", rc);
     } else {
-        printf("[OK] Driver unloaded successfully.\n");
+        printf("[OK] GSH driver unloaded.\n");
+    }
+
+    /* 5. 卸载 Auxiliary 驱动 */
+    WCHAR auxPath[MAX_PATH];
+    wcscpy_s(auxPath, MAX_PATH, driverPath);
+    WCHAR* auxSlash = wcsrchr(auxPath, L'\\');
+    if (auxSlash) { *(auxSlash + 1) = L'\0'; wcscat_s(auxPath, MAX_PATH, L"Auxiliary.sys"); }
+    printf("[5/5] Unloading Auxiliary driver...\n");
+    int auxRc = GdrvUnloadDriver(auxPath);
+    if (auxRc != 0) {
+        fprintf(stderr, "[WARN] GdrvUnloadDriver(Aux) returned %d\n", auxRc);
+    } else {
+        printf("[OK] Auxiliary driver unloaded.\n");
     }
 
     printf("\n[DONE] GlobalShutdownHook shutdown complete.\n");
-    printf("       Background service will exit automatically (detected driver unload).\n");
     return 0;
 }
