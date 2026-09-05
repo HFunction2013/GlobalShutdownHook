@@ -1,12 +1,12 @@
 /*
- * Auxiliary.sys - InfinityHook 系统调用拦截 + PPL/DKOM 保护驱动
+ * Auxiliary.sys - InfinityHook 系统调用拦截驱动
  * 基于 zhutingxf/InfinityHookPro 最小改动嵌入
  *
- * 功能:
- *   - InfinityHook syscall 拦截 (NtUnloadDriver/NtTerminateProcess/NtShutdownSystem/NtInitiatePowerAction)
- *   - PPL 进程保护 (设置 WinTCB 保护级别)
- *   - DKOM 进程隐藏 (从 ActiveProcessLinks 摘除)
- *   - quitting 状态 (quit 时才允许 terminate/unload)
+ * 拦截目标:
+ *   - NtUnloadDriver: 阻止卸载驱动
+ *   - NtTerminateProcess: 阻止终止 BgSrv 进程
+ *   - NtShutdownSystem: 阻止关机
+ *   - NtInitiatePowerAction: 阻止关机/休眠
  */
 
 #pragma warning(disable : 4201 4819 4311 4302)
@@ -19,340 +19,722 @@
  *  全局变量
  * ============================================================ */
 
+/* 原始 syscall 函数指针 */
 static PVOID g_OriginalNtUnloadDriver = NULL;
 static PVOID g_OriginalNtTerminateProcess = NULL;
 static PVOID g_OriginalNtShutdownSystem = NULL;
 static PVOID g_OriginalNtInitiatePowerAction = NULL;
 
+/* syscall 函数地址 (用于在 InfinityCallback 中识别) */
 static PVOID g_pNtUnloadDriver = NULL;
 static PVOID g_pNtTerminateProcess = NULL;
 static PVOID g_pNtShutdownSystem = NULL;
 static PVOID g_pNtInitiatePowerAction = NULL;
 
+/* 状态 */
 static volatile LONG g_BlockedCount = 0;
 static HANDLE g_BgSrvPid = NULL;
+static volatile bool g_Quitting = false;
 static PDEVICE_OBJECT g_DeviceObject = NULL;
 static UNICODE_STRING g_DosDeviceName;
 
-/* quitting 状态: true 时允许 terminate BgSrv 和 unload GSH */
-static volatile LONG g_Quitting = 0;
-
+/* 是否使用 syscall 号匹配 (当 MmGetSystemRoutineAddress 解析失败时启用) */
 static bool g_UseSyscallIndex = false;
 static ULONG g_SyscallUnload = 0;
 static ULONG g_SyscallTerminate = 0;
 static ULONG g_SyscallShutdown = 0;
 static ULONG g_SyscallPowerAction = 0;
 
-/* ============================================================
- *  PPL/DKOM 偏移 (动态查找, 基于 PPLcontrol OffsetFinder)
- * ============================================================ */
-
-typedef struct _AUX_OFFSETS {
-    ULONG UniqueProcessId;
-    ULONG ActiveProcessLinks;
-    ULONG Protection;
-    ULONG SignatureLevel;
-    ULONG SectionSignatureLevel;
-} AUX_OFFSETS, *PAUX_OFFSETS;
-
-static AUX_OFFSETS g_Offsets = { 0 };
-static bool g_OffsetsReady = false;
-static LIST_ENTRY g_SavedBgSrvLinks = { 0 };
-static bool g_BgSrvHidden = false;
-
-/* syscall 查找表 */
+/* 从 nt-per-syscall.json 提取的跨版本 syscall 查找表 */
 typedef struct _AUX_SYSCALL_ENTRY {
-    ULONG Build; ULONG Unload; ULONG Terminate; ULONG Shutdown; ULONG PowerAction;
+    ULONG Build;
+    ULONG Unload;
+    ULONG Terminate;
+    ULONG Shutdown;
+    ULONG PowerAction;
 } AUX_SYSCALL_ENTRY;
 
 static const AUX_SYSCALL_ENTRY g_AuxSyscallTable[] = {
-    { 10240, 425, 44, 408, 241 }, { 10586, 428, 44, 411, 243 },
-    { 14393, 434, 44, 417, 245 }, { 15063, 440, 44, 423, 248 },
-    { 16299, 444, 44, 426, 249 }, { 17134, 446, 44, 428, 250 },
-    { 17763, 447, 44, 429, 251 }, { 18362, 448, 44, 430, 252 },
-    { 18363, 448, 44, 430, 252 }, { 19041, 454, 44, 436, 257 },
-    { 19042, 454, 44, 436, 257 }, { 19043, 454, 44, 436, 257 },
-    { 19044, 456, 44, 438, 258 }, { 19045, 456, 44, 438, 258 },
-    { 20348, 462, 44, 444, 262 }, { 22000, 466, 44, 447, 263 },
-    { 22621, 470, 44, 451, 264 }, { 22631, 470, 44, 451, 264 },
+    { 10240, 425, 44, 408, 241 },
+    { 10586, 428, 44, 411, 243 },
+    { 14393, 434, 44, 417, 245 },
+    { 15063, 440, 44, 423, 248 },
+    { 16299, 444, 44, 426, 249 },
+    { 17134, 446, 44, 428, 250 },
+    { 17763, 447, 44, 429, 251 },
+    { 18362, 448, 44, 430, 252 },
+    { 18363, 448, 44, 430, 252 },
+    { 19041, 454, 44, 436, 257 },
+    { 19042, 454, 44, 436, 257 },
+    { 19043, 454, 44, 436, 257 },
+    { 19044, 456, 44, 438, 258 },
+    { 19045, 456, 44, 438, 258 },
+    { 20348, 462, 44, 444, 262 },
+    { 22000, 466, 44, 447, 263 },
+    { 22621, 470, 44, 451, 264 },
+    { 22631, 470, 44, 451, 264 },
     { 26100, 473, 44, 454, 266 },
 };
 static const ULONG g_AuxSyscallTableCount = 19;
 
-/* ============================================================
- *  PPL 动态偏移查找 (基于 PPLcontrol, 内核版)
- * ============================================================ */
-
-static bool AuxFindOffsets()
-{
-    UNICODE_STRING str; PUCHAR pFunc; USHORT offset;
-
-    WCHAR n1[]=L"PsGetProcessId"; RtlInitUnicodeString(&str,n1);
-    pFunc=(PUCHAR)MmGetSystemRoutineAddress(&str);
-    if(!pFunc) return false;
-    offset=*(PUSHORT)(pFunc+3); g_Offsets.UniqueProcessId=offset;
-
-    g_Offsets.ActiveProcessLinks=g_Offsets.UniqueProcessId+sizeof(HANDLE);
-
-    WCHAR n2[]=L"PsIsProtectedProcess"; RtlInitUnicodeString(&str,n2);
-    pFunc=(PUCHAR)MmGetSystemRoutineAddress(&str);
-    if(!pFunc) return false;
-    offset=*(PUSHORT)(pFunc+3); g_Offsets.Protection=offset;
-
-    g_Offsets.SignatureLevel=g_Offsets.Protection-2;
-    g_Offsets.SectionSignatureLevel=g_Offsets.Protection-1;
-    g_OffsetsReady=true;
-    DbgPrintEx(0,0,"[Aux] Offsets: PID=0x%X Links=0x%X Prot=0x%X\n",
-        g_Offsets.UniqueProcessId,g_Offsets.ActiveProcessLinks,g_Offsets.Protection);
-    return true;
-}
-
-/* ============================================================
- *  PPL: 设置进程保护级别
- * ============================================================ */
-
-static NTSTATUS AuxSetProcessProtection(HANDLE Pid, UCHAR ProtectionLevel)
-{
-    if(!g_OffsetsReady) return STATUS_NOT_SUPPORTED;
-    PEPROCESS pProcess=NULL;
-    NTSTATUS status=PsLookupProcessByProcessId(Pid,&pProcess);
-    if(!NT_SUCCESS(status)) return status;
-    PUCHAR pEproc=(PUCHAR)pProcess;
-    *(PUCHAR)(pEproc+g_Offsets.Protection)=ProtectionLevel;
-    if(ProtectionLevel==PROTECTION_LEVEL_WINTCB) {
-        *(PUCHAR)(pEproc+g_Offsets.SignatureLevel)=0x7;
-        *(PUCHAR)(pEproc+g_Offsets.SectionSignatureLevel)=0x7;
-    }
-    DbgPrintEx(0,0,"[Aux] Set protection 0x%02X on PID %p\n",ProtectionLevel,Pid);
-    ObDereferenceObject(pProcess);
-    return STATUS_SUCCESS;
-}
-
-/* ============================================================
- *  DKOM: 隐藏/恢复进程
- * ============================================================ */
-
-static NTSTATUS AuxHideProcess(HANDLE Pid)
-{
-    if(!g_OffsetsReady) return STATUS_NOT_SUPPORTED;
-    PEPROCESS pProcess=NULL;
-    NTSTATUS status=PsLookupProcessByProcessId(Pid,&pProcess);
-    if(!NT_SUCCESS(status)) return status;
-    PUCHAR pEproc=(PUCHAR)pProcess;
-    PLIST_ENTRY pLinks=(PLIST_ENTRY)(pEproc+g_Offsets.ActiveProcessLinks);
-    g_SavedBgSrvLinks=*pLinks;
-    pLinks->Blink->Flink=pLinks->Flink;
-    pLinks->Flink->Blink=pLinks->Blink;
-    pLinks->Flink=pLinks; pLinks->Blink=pLinks;
-    g_BgSrvHidden=true;
-    DbgPrintEx(0,0,"[Aux] DKOM hidden PID %p\n",Pid);
-    ObDereferenceObject(pProcess);
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS AuxUnhideProcess(HANDLE Pid)
-{
-    if(!g_OffsetsReady||!g_BgSrvHidden) return STATUS_SUCCESS;
-    PEPROCESS pProcess=NULL;
-    NTSTATUS status=PsLookupProcessByProcessId(Pid,&pProcess);
-    if(!NT_SUCCESS(status)) return status;
-    PUCHAR pEproc=(PUCHAR)pProcess;
-    PLIST_ENTRY pLinks=(PLIST_ENTRY)(pEproc+g_Offsets.ActiveProcessLinks);
-    pLinks->Flink=g_SavedBgSrvLinks.Flink;
-    pLinks->Blink=g_SavedBgSrvLinks.Blink;
-    pLinks->Blink->Flink=pLinks;
-    pLinks->Flink->Blink=pLinks;
-    g_BgSrvHidden=false;
-    DbgPrintEx(0,0,"[Aux] DKOM unhidden PID %p\n",Pid);
-    ObDereferenceObject(pProcess);
-    return STATUS_SUCCESS;
-}
-
-/* ============================================================
- *  syscall 查找
- * ============================================================ */
-
+/* 根据 build number 查找 syscall 号 (向下取整) */
 static bool AuxLookupSyscallNumbers(ULONG buildNumber)
 {
-    const AUX_SYSCALL_ENTRY* best=NULL;
-    for(ULONG i=0;i<g_AuxSyscallTableCount;i++) {
-        if(g_AuxSyscallTable[i].Build<=buildNumber) best=&g_AuxSyscallTable[i];
-        else break;
+    const AUX_SYSCALL_ENTRY* best = NULL;
+    for (ULONG i = 0; i < g_AuxSyscallTableCount; i++) {
+        if (g_AuxSyscallTable[i].Build <= buildNumber) {
+            best = &g_AuxSyscallTable[i];
+        } else {
+            break;
+        }
     }
-    if(!best) return false;
-    g_SyscallUnload=best->Unload; g_SyscallTerminate=best->Terminate;
-    g_SyscallShutdown=best->Shutdown; g_SyscallPowerAction=best->PowerAction;
+    if (!best) return false;
+    g_SyscallUnload = best->Unload;
+    g_SyscallTerminate = best->Terminate;
+    g_SyscallShutdown = best->Shutdown;
+    g_SyscallPowerAction = best->PowerAction;
+    DbgPrintEx(0, 0, "[Auxiliary] Syscall lookup for build %lu: Unload=%lu Terminate=%lu Shutdown=%lu PowerAction=%lu\n",
+        buildNumber, g_SyscallUnload, g_SyscallTerminate, g_SyscallShutdown, g_SyscallPowerAction);
     return true;
 }
 
-typedef NTSTATUS(NTAPI* NtUnloadDriver_t)(PUNICODE_STRING);
-typedef NTSTATUS(NTAPI* NtTerminateProcess_t)(HANDLE,NTSTATUS);
-typedef NTSTATUS(NTAPI* NtShutdownSystem_t)(ULONG);
-typedef NTSTATUS(NTAPI* NtInitiatePowerAction_t)(POWER_ACTION,SYSTEM_POWER_STATE,ULONG,BOOLEAN);
-
 /* ============================================================
- *  假 syscall 函数
+ *  syscall 函数类型定义
  * ============================================================ */
 
-static PWCHAR AuxFindSubstring(PWCHAR str,PWCHAR search)
+typedef NTSTATUS(NTAPI* NtUnloadDriver_t)(PUNICODE_STRING DriverServiceName);
+typedef NTSTATUS(NTAPI* NtTerminateProcess_t)(HANDLE ProcessHandle, NTSTATUS ExitStatus);
+typedef NTSTATUS(NTAPI* NtShutdownSystem_t)(ULONG ShutdownAction);
+typedef NTSTATUS(NTAPI* NtInitiatePowerAction_t)(
+    POWER_ACTION Action,
+    SYSTEM_POWER_STATE MinSystemState,
+    ULONG Flags,
+    BOOLEAN Asynchronous);
+
+/* ============================================================
+ *  假的 syscall 函数 (拦截逻辑)
+ * ============================================================ */
+
+/* 自定义宽字符串子串查找（不依赖 CRT wcsstr，内核安全） */
+static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
 {
-    if(!str||!search||!*search) return str;
-    for(;*str;str++) { PWCHAR s1=str,s2=search; while(*s1&&*s2&&(*s1==*s2)){s1++;s2++;} if(!*s2) return str; }
+    if (!str || !search || !*search) return str;
+    for (; *str; str++)
+    {
+        PWCHAR s1 = str, s2 = search;
+        while (*s1 && *s2 && (*s1 == *s2)) { s1++; s2++; }
+        if (!*s2) return str;
+    }
     return NULL;
+}
+
+/* ============================================================
+ *  PPL / DKOM 实现 (基于 PPLcontrol OffsetFinder 逻辑)
+ * ============================================================ */
+
+/* EPROCESS 偏移（运行时动态查找） */
+static LONG g_OffsetProtection = -1;
+static LONG g_OffsetSignatureLevel = -1;
+static LONG g_OffsetSectionSignatureLevel = -1;
+static LONG g_OffsetActiveProcessLinks = -1;
+static LONG g_OffsetUniqueProcessId = -1;
+
+/* 从函数反汇编中提取偏移（PPLcontrol OffsetFinder 简化版） */
+static LONG AuxFindOffsetFromFunction(PVOID funcAddr, UCHAR expectedOpcode, int scanBytes)
+{
+    PUCHAR p = (PUCHAR)funcAddr;
+    for (int i = 0; i < scanBytes; i++) {
+        if (p[i] == expectedOpcode) {
+            /* 通常是 mov [reg+offset], reg 或 mov reg, [reg+offset] 形式 */
+            if (i + 3 < scanBytes && p[i+1] >= 0x40 && p[i+1] <= 0x7F) {
+                return (LONG)p[i+2];
+            }
+            /* mov reg, [reg+disp32] 或 mov [reg+disp32], reg */
+            if (i + 6 < scanBytes && (p[i+1] & 0xC0) == 0x80) {
+                LONG offset = 0;
+                RtlCopyMemory(&offset, &p[i+3], 4);
+                return offset;
+            }
+        }
+    }
+    return -1;
+}
+
+static void AuxFindOffsets(void)
+{
+    /* PsGetProcessId 返回 UniqueProcessId，从中提取偏移 */
+    UNICODE_STRING funcName;
+    RtlInitUnicodeString(&funcName, L"PsGetProcessId");
+    PVOID pPsGetProcessId = MmGetSystemRoutineAddress(&funcName);
+    if (pPsGetProcessId) {
+        g_OffsetUniqueProcessId = AuxFindOffsetFromFunction(pPsGetProcessId, 0x8B, 32);
+        if (g_OffsetUniqueProcessId > 0) {
+            /* ActiveProcessLinks 通常在 UniqueProcessId 之后 0x10 */
+            g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + 0x10;
+        }
+    }
+
+    /* PsIsProtectedProcess 读取 Protection 字段 */
+    RtlInitUnicodeString(&funcName, L"PsIsProtectedProcess");
+    PVOID pPsIsProtected = MmGetSystemRoutineAddress(&funcName);
+    if (pPsIsProtected) {
+        g_OffsetProtection = AuxFindOffsetFromFunction(pPsIsProtected, 0x0F, 48);
+        if (g_OffsetProtection < 0) {
+            g_OffsetProtection = AuxFindOffsetFromFunction(pPsIsProtected, 0x80, 48);
+        }
+    }
+
+    /* 兜底：Win10/11 常见偏移 */
+    if (g_OffsetProtection < 0) g_OffsetProtection = 0x87A;
+    if (g_OffsetSignatureLevel < 0) g_OffsetSignatureLevel = g_OffsetProtection + 1;
+    if (g_OffsetSectionSignatureLevel < 0) g_OffsetSectionSignatureLevel = g_OffsetProtection + 2;
+    if (g_OffsetActiveProcessLinks < 0) g_OffsetActiveProcessLinks = 0x448;
+
+    DbgPrintEx(0, 0, "[Auxiliary] EPROCESS offsets: Protection=%ld SigLevel=%ld SecSig=%ld ActiveLinks=%ld\n",
+               g_OffsetProtection, g_OffsetSignatureLevel, g_OffsetSectionSignatureLevel, g_OffsetActiveProcessLinks);
+}
+
+static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
+{
+    if (g_OffsetProtection < 0) AuxFindOffsets();
+
+    PEPROCESS pEProcess = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
+    if (!NT_SUCCESS(status)) return status;
+
+    PUCHAR pProc = (PUCHAR)pEProcess;
+    /* 设置 Protection (PPL level) */
+    *(PUCHAR)(pProc + g_OffsetProtection) = protectionLevel;
+    /* 设置 SignatureLevel 和 SectionSignatureLevel 为 0x7 (Microsoft) */
+    if (g_OffsetSignatureLevel > 0) *(PUCHAR)(pProc + g_OffsetSignatureLevel) = 0x7;
+    if (g_OffsetSectionSignatureLevel > 0) *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = 0x7;
+
+    ObDereferenceObject(pEProcess);
+    DbgPrintEx(0, 0, "[Auxiliary] SetProcessProtection PID=%p level=0x%02X\n", pid, protectionLevel);
+    return STATUS_SUCCESS;
+}
+
+/* 保存被隐藏进程的 ActiveProcessLinks，用于恢复 */
+static LIST_ENTRY g_HiddenLinks;
+static bool g_bHidden = false;
+
+static NTSTATUS AuxHideProcess(HANDLE pid)
+{
+    if (g_OffsetActiveProcessLinks < 0) AuxFindOffsets();
+    if (g_bHidden) return STATUS_SUCCESS;
+
+    PEPROCESS pEProcess = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
+    if (!NT_SUCCESS(status)) return status;
+
+    PUCHAR pProc = (PUCHAR)pEProcess;
+    PLIST_ENTRY pList = (PLIST_ENTRY)(pProc + g_OffsetActiveProcessLinks);
+
+    /* 保存原始链接，然后从链表摘除 */
+    g_HiddenLinks = *pList;
+    pList->Blink->Flink = pList->Flink;
+    pList->Flink->Blink = pList->Blink;
+    /* 自引用，防止被遍历到时访问已释放内存 */
+    pList->Flink = pList;
+    pList->Blink = pList;
+
+    g_bHidden = true;
+    ObDereferenceObject(pEProcess);
+    DbgPrintEx(0, 0, "[Auxiliary] HideProcess PID=%p (DKOM)\n", pid);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS AuxUnhideProcess(HANDLE pid)
+{
+    if (!g_bHidden) return STATUS_SUCCESS;
+    if (g_OffsetActiveProcessLinks < 0) return STATUS_INVALID_PARAMETER;
+
+    PEPROCESS pEProcess = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
+    if (!NT_SUCCESS(status)) return status;
+
+    PUCHAR pProc = (PUCHAR)pEProcess;
+    PLIST_ENTRY pList = (PLIST_ENTRY)(pProc + g_OffsetActiveProcessLinks);
+
+    /* 恢复到原始链表位置 */
+    pList->Flink = g_HiddenLinks.Flink;
+    pList->Blink = g_HiddenLinks.Blink;
+    g_HiddenLinks.Flink->Blink = pList;
+    g_HiddenLinks.Blink->Flink = pList;
+
+    g_bHidden = false;
+    ObDereferenceObject(pEProcess);
+    DbgPrintEx(0, 0, "[Auxiliary] UnhideProcess PID=%p\n", pid);
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS NTAPI FakeNtUnloadDriver(PUNICODE_STRING DriverServiceName)
 {
-    if(InterlockedCompareExchange(&g_Quitting,0,0)==1)
+    /* quitting 状态下放行所有卸载（包括我们自己的驱动） */
+    if (g_Quitting) {
         return ((NtUnloadDriver_t)g_OriginalNtUnloadDriver)(DriverServiceName);
-    if(DriverServiceName) {
-        USHORT len=0; PWCHAR userBuf=NULL,safeBuf=NULL; bool blocked=false;
-        __try { ProbeForRead(DriverServiceName,sizeof(UNICODE_STRING),1); len=DriverServiceName->Length;
-            userBuf=DriverServiceName->Buffer; if(userBuf&&len>0) ProbeForRead(userBuf,len,1);
-        } __except(EXCEPTION_EXECUTE_HANDLER){len=0;userBuf=NULL;}
-        if(userBuf&&len>0) {
-            safeBuf=(PWCHAR)ExAllocatePoolWithTag(NonPagedPool,len+sizeof(WCHAR),'AuxU');
-            if(safeBuf){ RtlZeroMemory(safeBuf,len+sizeof(WCHAR));
-                __try{RtlCopyMemory(safeBuf,userBuf,len);}__except(EXCEPTION_EXECUTE_HANDLER){ExFreePoolWithTag(safeBuf,'AuxU');safeBuf=NULL;} }
-            if(safeBuf){ if(AuxFindSubstring(safeBuf,L"Auxiliary")||AuxFindSubstring(safeBuf,L"GlobalShutdownHook")){blocked=true;InterlockedIncrement(&g_BlockedCount);} ExFreePoolWithTag(safeBuf,'AuxU'); }
-        }
-        if(blocked) return STATUS_ACCESS_DENIED;
     }
+    /* 只阻止卸载我们自己的两个驱动: Auxiliary.sys 和 GlobalShutdownHook.sys */
+    if (DriverServiceName)
+    {
+        USHORT len = 0;
+        PWCHAR userBuf = NULL;
+        PWCHAR safeBuf = NULL;
+        bool blocked = false;
+
+        /* BUG1修复: 用 __try/__except 安全访问用户态 UNICODE_STRING，避免 TOCTOU */
+        __try
+        {
+            ProbeForRead(DriverServiceName, sizeof(UNICODE_STRING), 1);
+            len = DriverServiceName->Length;
+            userBuf = DriverServiceName->Buffer;
+            if (userBuf && len > 0)
+            {
+                ProbeForRead(userBuf, len, 1);
+            }
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER)
+        {
+            len = 0;
+            userBuf = NULL;
+        }
+
+        if (userBuf && len > 0)
+        {
+            /* 复制到内核缓冲区 */
+            safeBuf = (PWCHAR)ExAllocatePoolWithTag(NonPagedPool, len + sizeof(WCHAR), 'AuxU');
+            if (safeBuf)
+            {
+                RtlZeroMemory(safeBuf, len + sizeof(WCHAR));
+                __try
+                {
+                    RtlCopyMemory(safeBuf, userBuf, len);
+                }
+                __except(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    ExFreePoolWithTag(safeBuf, 'AuxU');
+                    safeBuf = NULL;
+                }
+            }
+
+            if (safeBuf)
+            {
+                /* BUG2修复: 使用自定义宽字符串查找，不依赖 CRT wcsstr */
+                if (AuxFindSubstring(safeBuf, L"Auxiliary") ||
+                    AuxFindSubstring(safeBuf, L"GlobalShutdownHook"))
+                {
+                    blocked = true;
+                    InterlockedIncrement(&g_BlockedCount);
+                    DbgPrintEx(0, 0, "[Auxiliary] Blocked NtUnloadDriver\n");
+                }
+                ExFreePoolWithTag(safeBuf, 'AuxU');
+            }
+        }
+
+        if (blocked)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+    }
+
+    /* 其他驱动正常卸载 */
     return ((NtUnloadDriver_t)g_OriginalNtUnloadDriver)(DriverServiceName);
 }
 
-static NTSTATUS NTAPI FakeNtTerminateProcess(HANDLE ProcessHandle,NTSTATUS ExitStatus)
+static NTSTATUS NTAPI FakeNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus)
 {
-    if(InterlockedCompareExchange(&g_Quitting,0,0)==1)
-        return ((NtTerminateProcess_t)g_OriginalNtTerminateProcess)(ProcessHandle,ExitStatus);
-    if(g_BgSrvPid!=NULL) {
-        PEPROCESS pProcess=NULL;
-        if(NT_SUCCESS(ObReferenceObjectByHandle(ProcessHandle,0x1000,NULL,KernelMode,(PVOID*)&pProcess,NULL))) {
-            HANDLE targetPid=PsGetProcessId(pProcess); ObDereferenceObject(pProcess);
-            if(targetPid==g_BgSrvPid){ InterlockedIncrement(&g_BlockedCount); return STATUS_ACCESS_DENIED; }
+    /* 检查是否是终止 BgSrv 进程 */
+    if (g_BgSrvPid != NULL)
+    {
+        PEPROCESS pProcess = NULL;
+        if (NT_SUCCESS(ObReferenceObjectByHandle(ProcessHandle, 0x1000,
+            NULL, KernelMode, (PVOID*)&pProcess, NULL)))
+        {
+            HANDLE targetPid = PsGetProcessId(pProcess);
+            ObDereferenceObject(pProcess);
+            if (targetPid == g_BgSrvPid)
+            {
+                InterlockedIncrement(&g_BlockedCount);
+                DbgPrintEx(0, 0, "[Auxiliary] Blocked NtTerminateProcess on BgSrv (PID=%p)\n", g_BgSrvPid);
+                return STATUS_ACCESS_DENIED;
+            }
         }
     }
-    return ((NtTerminateProcess_t)g_OriginalNtTerminateProcess)(ProcessHandle,ExitStatus);
+    /* 其他进程正常终止 */
+    return ((NtTerminateProcess_t)g_OriginalNtTerminateProcess)(ProcessHandle, ExitStatus);
 }
 
-static NTSTATUS NTAPI FakeNtShutdownSystem(ULONG a){UNREFERENCED_PARAMETER(a);InterlockedIncrement(&g_BlockedCount);return STATUS_ACCESS_DENIED;}
-static NTSTATUS NTAPI FakeNtInitiatePowerAction(POWER_ACTION a,SYSTEM_POWER_STATE b,ULONG c,BOOLEAN d)
-{UNREFERENCED_PARAMETER(a);UNREFERENCED_PARAMETER(b);UNREFERENCED_PARAMETER(c);UNREFERENCED_PARAMETER(d);InterlockedIncrement(&g_BlockedCount);return STATUS_ACCESS_DENIED;}
+static NTSTATUS NTAPI FakeNtShutdownSystem(ULONG ShutdownAction)
+{
+    UNREFERENCED_PARAMETER(ShutdownAction);
+    InterlockedIncrement(&g_BlockedCount);
+    DbgPrintEx(0, 0, "[Auxiliary] Blocked NtShutdownSystem\n");
+    return STATUS_ACCESS_DENIED;
+}
+
+static NTSTATUS NTAPI FakeNtInitiatePowerAction(
+    POWER_ACTION Action,
+    SYSTEM_POWER_STATE MinSystemState,
+    ULONG Flags,
+    BOOLEAN Asynchronous)
+{
+    UNREFERENCED_PARAMETER(Action);
+    UNREFERENCED_PARAMETER(MinSystemState);
+    UNREFERENCED_PARAMETER(Flags);
+    UNREFERENCED_PARAMETER(Asynchronous);
+    InterlockedIncrement(&g_BlockedCount);
+    DbgPrintEx(0, 0, "[Auxiliary] Blocked NtInitiatePowerAction\n");
+    return STATUS_ACCESS_DENIED;
+}
 
 /* ============================================================
- *  InfinityHook 回调
+ *  InfinityHook 回调函数
+ *  在 syscall 入口被调用，可以替换 syscall 函数指针
  * ============================================================ */
 
-void __fastcall InfinityCallback(unsigned long nCallIndex,PVOID* pSsdtAddress)
+void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID* pSsdtAddress)
 {
-    if(!pSsdtAddress) return;
-    if(!g_UseSyscallIndex) {
-        if(*pSsdtAddress==g_pNtUnloadDriver){g_OriginalNtUnloadDriver=*pSsdtAddress;*pSsdtAddress=FakeNtUnloadDriver;}
-        else if(*pSsdtAddress==g_pNtTerminateProcess){g_OriginalNtTerminateProcess=*pSsdtAddress;*pSsdtAddress=FakeNtTerminateProcess;}
-        else if(*pSsdtAddress==g_pNtShutdownSystem){g_OriginalNtShutdownSystem=*pSsdtAddress;*pSsdtAddress=FakeNtShutdownSystem;}
-        else if(*pSsdtAddress==g_pNtInitiatePowerAction){g_OriginalNtInitiatePowerAction=*pSsdtAddress;*pSsdtAddress=FakeNtInitiatePowerAction;}
-    } else {
-        if(nCallIndex==g_SyscallUnload){g_OriginalNtUnloadDriver=*pSsdtAddress;*pSsdtAddress=FakeNtUnloadDriver;}
-        else if(nCallIndex==g_SyscallTerminate){g_OriginalNtTerminateProcess=*pSsdtAddress;*pSsdtAddress=FakeNtTerminateProcess;}
-        else if(nCallIndex==g_SyscallShutdown){g_OriginalNtShutdownSystem=*pSsdtAddress;*pSsdtAddress=FakeNtShutdownSystem;}
-        else if(nCallIndex==g_SyscallPowerAction){g_OriginalNtInitiatePowerAction=*pSsdtAddress;*pSsdtAddress=FakeNtInitiatePowerAction;}
+    if (!pSsdtAddress) return;
+
+    /* 优先使用函数地址匹配 (MmGetSystemRoutineAddress 成功时) */
+    if (!g_UseSyscallIndex)
+    {
+        if (*pSsdtAddress == g_pNtUnloadDriver)
+        {
+            g_OriginalNtUnloadDriver = *pSsdtAddress;
+            *pSsdtAddress = FakeNtUnloadDriver;
+        }
+        else if (*pSsdtAddress == g_pNtTerminateProcess)
+        {
+            g_OriginalNtTerminateProcess = *pSsdtAddress;
+            *pSsdtAddress = FakeNtTerminateProcess;
+        }
+        else if (*pSsdtAddress == g_pNtShutdownSystem)
+        {
+            g_OriginalNtShutdownSystem = *pSsdtAddress;
+            *pSsdtAddress = FakeNtShutdownSystem;
+        }
+        else if (*pSsdtAddress == g_pNtInitiatePowerAction)
+        {
+            g_OriginalNtInitiatePowerAction = *pSsdtAddress;
+            *pSsdtAddress = FakeNtInitiatePowerAction;
+        }
+    }
+    else
+    {
+        /* 地址解析失败时，使用 syscall 号匹配 (从 nt-per-syscall.json 提取) */
+        if (nCallIndex == g_SyscallUnload)
+        {
+            g_OriginalNtUnloadDriver = *pSsdtAddress;
+            *pSsdtAddress = FakeNtUnloadDriver;
+        }
+        else if (nCallIndex == g_SyscallTerminate)
+        {
+            g_OriginalNtTerminateProcess = *pSsdtAddress;
+            *pSsdtAddress = FakeNtTerminateProcess;
+        }
+        else if (nCallIndex == g_SyscallShutdown)
+        {
+            g_OriginalNtShutdownSystem = *pSsdtAddress;
+            *pSsdtAddress = FakeNtShutdownSystem;
+        }
+        else if (nCallIndex == g_SyscallPowerAction)
+        {
+            g_OriginalNtInitiatePowerAction = *pSsdtAddress;
+            *pSsdtAddress = FakeNtInitiatePowerAction;
+        }
     }
 }
+
+/* ============================================================
+ *  获取 syscall 函数地址
+ * ============================================================ */
 
 static bool GetSyscallAddresses()
 {
-    UNICODE_STRING str; ULONG cnt=0;
-    WCHAR n1[]=L"NtUnloadDriver";RtlInitUnicodeString(&str,n1);g_pNtUnloadDriver=MmGetSystemRoutineAddress(&str);if(g_pNtUnloadDriver)cnt++;
-    WCHAR n2[]=L"NtTerminateProcess";RtlInitUnicodeString(&str,n2);g_pNtTerminateProcess=MmGetSystemRoutineAddress(&str);if(g_pNtTerminateProcess)cnt++;
-    WCHAR n3[]=L"NtShutdownSystem";RtlInitUnicodeString(&str,n3);g_pNtShutdownSystem=MmGetSystemRoutineAddress(&str);if(g_pNtShutdownSystem)cnt++;
-    WCHAR n4[]=L"NtInitiatePowerAction";RtlInitUnicodeString(&str,n4);g_pNtInitiatePowerAction=MmGetSystemRoutineAddress(&str);if(g_pNtInitiatePowerAction)cnt++;
-    if(cnt==4){g_UseSyscallIndex=false;return true;}
-    g_UseSyscallIndex=true;
-    RTL_OSVERSIONINFOW osvi={0};osvi.dwOSVersionInfoSize=sizeof(osvi);
-    if(!NT_SUCCESS(RtlGetVersion(&osvi))) return false;
-    return AuxLookupSyscallNumbers(osvi.dwBuildNumber);
+    UNICODE_STRING str;
+    ULONG resolvedCount = 0;
+
+    WCHAR nameUnload[] = L"NtUnloadDriver";
+    RtlInitUnicodeString(&str, nameUnload);
+    g_pNtUnloadDriver = MmGetSystemRoutineAddress(&str);
+    if (g_pNtUnloadDriver) resolvedCount++;
+    DbgPrintEx(0, 0, "[Auxiliary] NtUnloadDriver: %p\n", g_pNtUnloadDriver);
+
+    WCHAR nameTerminate[] = L"NtTerminateProcess";
+    RtlInitUnicodeString(&str, nameTerminate);
+    g_pNtTerminateProcess = MmGetSystemRoutineAddress(&str);
+    if (g_pNtTerminateProcess) resolvedCount++;
+    DbgPrintEx(0, 0, "[Auxiliary] NtTerminateProcess: %p\n", g_pNtTerminateProcess);
+
+    WCHAR nameShutdown[] = L"NtShutdownSystem";
+    RtlInitUnicodeString(&str, nameShutdown);
+    g_pNtShutdownSystem = MmGetSystemRoutineAddress(&str);
+    if (g_pNtShutdownSystem) resolvedCount++;
+    DbgPrintEx(0, 0, "[Auxiliary] NtShutdownSystem: %p\n", g_pNtShutdownSystem);
+
+    WCHAR namePower[] = L"NtInitiatePowerAction";
+    RtlInitUnicodeString(&str, namePower);
+    g_pNtInitiatePowerAction = MmGetSystemRoutineAddress(&str);
+    if (g_pNtInitiatePowerAction) resolvedCount++;
+    DbgPrintEx(0, 0, "[Auxiliary] NtInitiatePowerAction: %p\n", g_pNtInitiatePowerAction);
+
+    /* 如果全部解析成功，使用函数地址匹配 */
+    if (resolvedCount == 4)
+    {
+        g_UseSyscallIndex = false;
+        DbgPrintEx(0, 0, "[Auxiliary] All 4 syscall addresses resolved, using address matching\n");
+        return true;
+    }
+
+    /* 部分或全部解析失败，回退到 syscall 号匹配 (从 nt-per-syscall.json) */
+    DbgPrintEx(0, 0, "[Auxiliary] Only %lu/4 addresses resolved, falling back to syscall index matching\n", resolvedCount);
+    g_UseSyscallIndex = true;
+
+    /* 获取当前系统 build number */
+    RTL_OSVERSIONINFOW osvi = { 0 };
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    if (!NT_SUCCESS(RtlGetVersion(&osvi)))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] RtlGetVersion failed\n");
+        return false;
+    }
+
+    /* 从查找表获取 syscall 号 */
+    if (!AuxLookupSyscallNumbers(osvi.dwBuildNumber))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] No syscall lookup entry for build %lu\n", osvi.dwBuildNumber);
+        return false;
+    }
+
+    return true;
 }
 
 /* ============================================================
- *  IOCTL
+ *  IOCTL 分发
  * ============================================================ */
 
-static NTSTATUS AuxIoctlDispatch(PDEVICE_OBJECT dev,PIRP Irp)
+static NTSTATUS AuxIoctlDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
-    UNREFERENCED_PARAMETER(dev);
-    PIO_STACK_LOCATION sp=IoGetCurrentIrpStackLocation(Irp);
-    NTSTATUS status=STATUS_SUCCESS; ULONG info=0;
-    switch(sp->Parameters.DeviceIoControl.IoControlCode) {
+    UNREFERENCED_PARAMETER(DeviceObject);
+    PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG info = 0;
+
+    switch (irpSp->Parameters.DeviceIoControl.IoControlCode)
+    {
     case IOCTL_AUX_GET_BLOCKED_COUNT:
-        if(sp->Parameters.DeviceIoControl.OutputBufferLength>=sizeof(ULONG)){*(PULONG)Irp->AssociatedIrp.SystemBuffer=(ULONG)InterlockedCompareExchange(&g_BlockedCount,0,0);info=sizeof(ULONG);}
-        else status=STATUS_BUFFER_TOO_SMALL; break;
-    case IOCTL_AUX_SET_BGSRV_PID:
-        if(sp->Parameters.DeviceIoControl.InputBufferLength>=sizeof(HANDLE)) g_BgSrvPid=*(PHANDLE)Irp->AssociatedIrp.SystemBuffer;
-        else status=STATUS_BUFFER_TOO_SMALL; break;
-    case IOCTL_AUX_SET_PROTECTION:
-        if(sp->Parameters.DeviceIoControl.InputBufferLength>=sizeof(AUX_PROTECTION_INPUT)){
-            PAUX_PROTECTION_INPUT inp=(PAUX_PROTECTION_INPUT)Irp->AssociatedIrp.SystemBuffer;
-            status=AuxSetProcessProtection(inp->Pid,inp->ProtectionLevel);
-        } else status=STATUS_BUFFER_TOO_SMALL; break;
-    case IOCTL_AUX_HIDE_PROCESS:
-        if(sp->Parameters.DeviceIoControl.InputBufferLength>=sizeof(AUX_HIDE_INPUT)){
-            PAUX_HIDE_INPUT inp=(PAUX_HIDE_INPUT)Irp->AssociatedIrp.SystemBuffer;
-            status=AuxHideProcess(inp->Pid);
-        } else status=STATUS_BUFFER_TOO_SMALL; break;
-    case IOCTL_AUX_UNHIDE_PROCESS:
-        if(sp->Parameters.DeviceIoControl.InputBufferLength>=sizeof(AUX_HIDE_INPUT)){
-            PAUX_HIDE_INPUT inp=(PAUX_HIDE_INPUT)Irp->AssociatedIrp.SystemBuffer;
-            status=AuxUnhideProcess(inp->Pid);
-        } else status=STATUS_BUFFER_TOO_SMALL; break;
-    case IOCTL_AUX_SET_QUITTING:
-        InterlockedExchange(&g_Quitting,1);
-        DbgPrintEx(0,0,"[Aux] QUITTING state set\n"); break;
-    default: status=STATUS_INVALID_DEVICE_REQUEST; break;
+    {
+        if (irpSp->Parameters.DeviceIoControl.OutputBufferLength >= sizeof(ULONG))
+        {
+            *(PULONG)Irp->AssociatedIrp.SystemBuffer = (ULONG)InterlockedCompareExchange(&g_BlockedCount, 0, 0);
+            info = sizeof(ULONG);
+        }
+        else
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        break;
     }
-    Irp->IoStatus.Status=status; Irp->IoStatus.Information=info;
-    IoCompleteRequest(Irp,IO_NO_INCREMENT); return status;
+
+    case IOCTL_AUX_SET_BGSRV_PID:
+    {
+        if (irpSp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(HANDLE))
+        {
+            g_BgSrvPid = *(PHANDLE)Irp->AssociatedIrp.SystemBuffer;
+            DbgPrintEx(0, 0, "[Auxiliary] BgSrv PID set to %p\n", g_BgSrvPid);
+        }
+        else
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        break;
+    }
+
+    case IOCTL_AUX_SET_QUITTING:
+        g_Quitting = true;
+        DbgPrintEx(0, 0, "[Auxiliary] QUITTING state set - all blocks disabled\n");
+        break;
+
+    case IOCTL_AUX_SET_PROTECTION:
+    {
+        if (irpSp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(AUX_PROTECTION_INPUT))
+        {
+            PAUX_PROTECTION_INPUT pIn = (PAUX_PROTECTION_INPUT)Irp->AssociatedIrp.SystemBuffer;
+            status = AuxSetProcessProtection(pIn->Pid, pIn->ProtectionLevel);
+        }
+        else
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        break;
+    }
+
+    case IOCTL_AUX_HIDE_PROCESS:
+    {
+        if (irpSp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(AUX_HIDE_INPUT))
+        {
+            PAUX_HIDE_INPUT pIn = (PAUX_HIDE_INPUT)Irp->AssociatedIrp.SystemBuffer;
+            status = AuxHideProcess(pIn->Pid);
+        }
+        else
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        break;
+    }
+
+    case IOCTL_AUX_UNHIDE_PROCESS:
+    {
+        if (irpSp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(AUX_HIDE_INPUT))
+        {
+            PAUX_HIDE_INPUT pIn = (PAUX_HIDE_INPUT)Irp->AssociatedIrp.SystemBuffer;
+            status = AuxUnhideProcess(pIn->Pid);
+        }
+        else
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+        }
+        break;
+    }
+
+    default:
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        break;
+    }
+
+    Irp->IoStatus.Status = status;
+    Irp->IoStatus.Information = info;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return status;
 }
 
-static NTSTATUS AuxCreateClose(PDEVICE_OBJECT dev,PIRP Irp)
-{UNREFERENCED_PARAMETER(dev);Irp->IoStatus.Status=STATUS_SUCCESS;Irp->IoStatus.Information=0;IoCompleteRequest(Irp,IO_NO_INCREMENT);return STATUS_SUCCESS;}
+/* ============================================================
+ *  创建/关闭处理
+ * ============================================================ */
+
+static NTSTATUS AuxCreateClose(PDEVICE_OBJECT DeviceObject, PIRP Irp)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
 
 /* ============================================================
- *  卸载 (KHook::Stop 只在这里)
+ *  驱动卸载
  * ============================================================ */
 
 VOID DriverUnload(PDRIVER_OBJECT driver)
 {
     UNREFERENCED_PARAMETER(driver);
-    DbgPrintEx(0,0,"[Aux] Unloading\n");
-    if(g_BgSrvHidden&&g_BgSrvPid) AuxUnhideProcess(g_BgSrvPid);
+    DbgPrintEx(0, 0, "[Auxiliary] Unloading Auxiliary.sys\n");
+
+    /* 停止 InfinityHook */
     KHook::Stop();
-    { LARGE_INTEGER d; d.QuadPart=-200*10000; KeDelayExecutionThread(KernelMode,FALSE,&d); }
-    if(g_DosDeviceName.Buffer){IoDeleteSymbolicLink(&g_DosDeviceName);RtlFreeUnicodeString(&g_DosDeviceName);}
-    if(driver->DeviceObject) IoDeleteDevice(driver->DeviceObject);
+
+    /* 等待所有 CPU 退出 hook 回调，避免卸载后仍有 CPU 执行已释放的回调
+     * GetCpuClock 恢复后，已进入回调的 CPU 可能仍在执行 InfinityCallback。
+     * 等待 200ms 确保所有并发实例退出。
+     */
+    {
+        LARGE_INTEGER delay;
+        delay.QuadPart = -200 * 10000;  /* 200ms，单位 100ns，负数表示相对时间 */
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    }
+    DbgPrintEx(0, 0, "[Auxiliary] Waited 200ms for all CPUs to exit hook callback\n");
+
+    /* 删除符号链接和设备对象 */
+    if (g_DosDeviceName.Buffer)
+    {
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+    }
+    if (driver->DeviceObject)
+    {
+        IoDeleteDevice(driver->DeviceObject);
+    }
+
+    DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys unloaded\n");
 }
 
 /* ============================================================
  *  DriverEntry
  * ============================================================ */
 
-EXTERN_C NTSTATUS DriverEntry(PDRIVER_OBJECT driver,PUNICODE_STRING reg)
+EXTERN_C
+NTSTATUS
+DriverEntry(
+    PDRIVER_OBJECT driver,
+    PUNICODE_STRING registe)
 {
-    UNREFERENCED_PARAMETER(reg);
-    NTSTATUS status; UNICODE_STRING dn;
-    driver->DriverUnload=DriverUnload;
-    driver->MajorFunction[IRP_MJ_CREATE]=AuxCreateClose;
-    driver->MajorFunction[IRP_MJ_CLOSE]=AuxCreateClose;
-    driver->MajorFunction[IRP_MJ_DEVICE_CONTROL]=AuxIoctlDispatch;
-    RtlInitUnicodeString(&dn,AUX_DEVICE_NAME);
-    status=IoCreateDevice(driver,0,&dn,FILE_DEVICE_UNKNOWN,FILE_DEVICE_SECURE_OPEN,FALSE,&g_DeviceObject);
-    if(!NT_SUCCESS(status)) return status;
-    RtlInitUnicodeString(&g_DosDeviceName,AUX_DOS_DEVICE_NAME);
-    status=IoCreateSymbolicLink(&g_DosDeviceName,&dn);
-    if(!NT_SUCCESS(status)){IoDeleteDevice(g_DeviceObject);return status;}
-    AuxFindOffsets();
-    if(!GetSyscallAddresses()){IoDeleteSymbolicLink(&g_DosDeviceName);RtlFreeUnicodeString(&g_DosDeviceName);IoDeleteDevice(g_DeviceObject);return STATUS_NOT_FOUND;}
-    if(!KHook::Initialize(InfinityCallback)){IoDeleteSymbolicLink(&g_DosDeviceName);RtlFreeUnicodeString(&g_DosDeviceName);IoDeleteDevice(g_DeviceObject);return STATUS_UNSUCCESSFUL;}
-    if(!KHook::Start()){KHook::Stop();IoDeleteSymbolicLink(&g_DosDeviceName);RtlFreeUnicodeString(&g_DosDeviceName);IoDeleteDevice(g_DeviceObject);return STATUS_UNSUCCESSFUL;}
-    DbgPrintEx(0,0,"[Aux] Loaded OK\n");
+    UNREFERENCED_PARAMETER(registe);
+    NTSTATUS status;
+    UNICODE_STRING deviceName;
+
+    DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys loading (InfinityHook syscall interceptor)\n");
+
+    /* 设置卸载例程 */
+    driver->DriverUnload = DriverUnload;
+
+    /* 设置分发例程 */
+    driver->MajorFunction[IRP_MJ_CREATE] = AuxCreateClose;
+    driver->MajorFunction[IRP_MJ_CLOSE] = AuxCreateClose;
+    driver->MajorFunction[IRP_MJ_DEVICE_CONTROL] = AuxIoctlDispatch;
+
+    /* 创建设备对象 */
+    RtlInitUnicodeString(&deviceName, AUX_DEVICE_NAME);
+    status = IoCreateDevice(driver, 0, &deviceName,
+                            FILE_DEVICE_UNKNOWN, FILE_DEVICE_SECURE_OPEN, FALSE,
+                            &g_DeviceObject);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] IoCreateDevice failed: 0x%X\n", status);
+        return status;
+    }
+
+    /* 创建符号链接 */
+    RtlInitUnicodeString(&g_DosDeviceName, AUX_DOS_DEVICE_NAME);
+    status = IoCreateSymbolicLink(&g_DosDeviceName, &deviceName);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] IoCreateSymbolicLink failed: 0x%X\n", status);
+        IoDeleteDevice(g_DeviceObject);
+        return status;
+    }
+
+    DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys loaded, initializing InfinityHook...\n");
+
+    /* 直接在 DriverEntry 中初始化并启动 KHook，不需要单独的 IOCTL */
+    if (!GetSyscallAddresses())
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] GetSyscallAddresses failed\n");
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        IoDeleteDevice(g_DeviceObject);
+        return STATUS_NOT_FOUND;
+    }
+
+    if (!KHook::Initialize(InfinityCallback))
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] KHook::Initialize failed\n");
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        IoDeleteDevice(g_DeviceObject);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    if (!KHook::Start())
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] KHook::Start failed\n");
+        KHook::Stop();
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        IoDeleteDevice(g_DeviceObject);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    DbgPrintEx(0, 0, "[Auxiliary] InfinityHook started successfully\n");
     return STATUS_SUCCESS;
 }

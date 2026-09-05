@@ -387,7 +387,7 @@ static int CmdQueryStatus(HANDLE hDriver);
 static int CmdInit(VOID);
 static int CmdQuit(HANDLE hDriver);
 
-int main(int argc, char *argv[])
+int CliMain(int argc, char* argv[])
 {
     if (argc < 2) {
         PrintHelp(argv[0]);

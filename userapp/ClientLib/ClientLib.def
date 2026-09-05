@@ -1,9 +1,0 @@
-LIBRARY ClientLib
-EXPORTS
-    Gsh_Init
-    Gsh_Quit
-    Gsh_Lock
-    Gsh_Unlock
-    Gsh_QueryStatus
-    Gsh_SetPassword
-    Gsh_GetLastError
