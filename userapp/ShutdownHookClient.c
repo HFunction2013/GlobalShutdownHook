@@ -13,6 +13,7 @@
  *   help                显示帮助
  */
 #include <windows.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
