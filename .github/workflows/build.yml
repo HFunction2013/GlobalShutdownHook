@@ -28,14 +28,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # --------------------------------------------------------
       # Cache Windows SDK 10.0.26100 layout
       # --------------------------------------------------------
       - name: Cache Windows SDK 10.0.26100 layout
         id: cache-sdk
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:\winsdk-layout\10.0.26100.0
           key: winsdk-10.0.26100.0-layout-v1
@@ -81,7 +81,6 @@ jobs:
             exit 1
           }
 
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -107,14 +106,13 @@ jobs:
       # Upload artifacts - Binaries only
       # --------------------------------------------------------
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: GlobalShutdownHook-${{ env.PLATFORM }}-Release-bin
           path: |
             bin/${{ env.PLATFORM }}/Release/*.sys
             bin/${{ env.PLATFORM }}/Release/*.exe
             bin/${{ env.PLATFORM }}/Release/*.dll
-
           if-no-files-found: error
           retention-days: 30
 
@@ -122,7 +120,7 @@ jobs:
       # Upload artifacts - PDB symbols only
       # --------------------------------------------------------
       - name: Upload PDB symbols
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: GlobalShutdownHook-${{ env.PLATFORM }}-Release-pdb
           path: |
