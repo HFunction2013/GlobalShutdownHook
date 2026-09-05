@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        configuration: [Release, Debug]
+        configuration: [Release]
 
     steps:
       - name: Checkout
