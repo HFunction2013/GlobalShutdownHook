@@ -129,7 +129,7 @@ static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
 }
 
 /* ============================================================
- *  PPL / DKOM 实现 (基于 PPLcontrol OffsetFinder 逻辑)
+ *  PPL / DKOM 实现 (参考 PPLcontrol / nyxppl 的动态偏移查找)
  * ============================================================ */
 
 /* EPROCESS 偏移（运行时动态查找） */
@@ -139,22 +139,19 @@ static LONG g_OffsetSectionSignatureLevel = -1;
 static LONG g_OffsetActiveProcessLinks = -1;
 static LONG g_OffsetUniqueProcessId = -1;
 
-/* 从函数反汇编中提取偏移（PPLcontrol OffsetFinder 简化版） */
-static LONG AuxFindOffsetFromFunction(PVOID funcAddr, UCHAR expectedOpcode, int scanBytes)
+/*
+ * 从函数反汇编中提取 EPROCESS 偏移（PPLcontrol 方式）
+ * PsGetProcessProtection: 0F B6 81 <disp32> C3  -> movzx eax, byte ptr [rcx+disp32]
+ * PsGetProcessId:          8B 81 <disp32> C3     -> mov eax, [rcx+disp32]
+ */
+static LONG AuxExtractDisp32(PVOID funcAddr, UCHAR opcode1, UCHAR opcode2, UCHAR modrm)
 {
     PUCHAR p = (PUCHAR)funcAddr;
-    for (int i = 0; i < scanBytes; i++) {
-        if (p[i] == expectedOpcode) {
-            /* 通常是 mov [reg+offset], reg 或 mov reg, [reg+offset] 形式 */
-            if (i + 3 < scanBytes && p[i+1] >= 0x40 && p[i+1] <= 0x7F) {
-                return (LONG)p[i+2];
-            }
-            /* mov reg, [reg+disp32] 或 mov [reg+disp32], reg */
-            if (i + 6 < scanBytes && (p[i+1] & 0xC0) == 0x80) {
-                LONG offset = 0;
-                RtlCopyMemory(&offset, &p[i+3], 4);
-                return offset;
-            }
+    for (int i = 0; i < 32; i++) {
+        if (p[i] == opcode1 && p[i+1] == opcode2 && p[i+2] == modrm) {
+            LONG disp = 0;
+            RtlCopyMemory(&disp, &p[i+3], 4);
+            return disp;
         }
     }
     return -1;
@@ -162,36 +159,35 @@ static LONG AuxFindOffsetFromFunction(PVOID funcAddr, UCHAR expectedOpcode, int 
 
 static void AuxFindOffsets(void)
 {
-    /* PsGetProcessId 返回 UniqueProcessId，从中提取偏移 */
     UNICODE_STRING funcName;
+
+    /* PsGetProcessId -> UniqueProcessId 偏移 */
     RtlInitUnicodeString(&funcName, L"PsGetProcessId");
-    PVOID pPsGetProcessId = MmGetSystemRoutineAddress(&funcName);
-    if (pPsGetProcessId) {
-        g_OffsetUniqueProcessId = AuxFindOffsetFromFunction(pPsGetProcessId, 0x8B, 32);
+    PVOID pFn = MmGetSystemRoutineAddress(&funcName);
+    if (pFn) {
+        g_OffsetUniqueProcessId = AuxExtractDisp32(pFn, 0x8B, 0x81, 0x81);
+        /* ActiveProcessLinks 在 UniqueProcessId 之后 8 字节 (Win10/11 x64) */
         if (g_OffsetUniqueProcessId > 0) {
-            /* ActiveProcessLinks 通常在 UniqueProcessId 之后 0x10 */
-            g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + 0x10;
+            g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + 8;
         }
     }
 
-    /* PsIsProtectedProcess 读取 Protection 字段 */
-    RtlInitUnicodeString(&funcName, L"PsIsProtectedProcess");
-    PVOID pPsIsProtected = MmGetSystemRoutineAddress(&funcName);
-    if (pPsIsProtected) {
-        g_OffsetProtection = AuxFindOffsetFromFunction(pPsIsProtected, 0x0F, 48);
-        if (g_OffsetProtection < 0) {
-            g_OffsetProtection = AuxFindOffsetFromFunction(pPsIsProtected, 0x80, 48);
-        }
+    /* PsGetProcessProtection -> Protection 偏移 */
+    RtlInitUnicodeString(&funcName, L"PsGetProcessProtection");
+    pFn = MmGetSystemRoutineAddress(&funcName);
+    if (pFn) {
+        g_OffsetProtection = AuxExtractDisp32(pFn, 0x0F, 0xB6, 0x81);
     }
 
-    /* 兜底：Win10/11 常见偏移 */
-    if (g_OffsetProtection < 0) g_OffsetProtection = 0x87A;
+    /* 兜底：常见版本偏移（Win10 1903+ / Win11） */
+    if (g_OffsetProtection < 0) g_OffsetProtection = 0x6FA;
     if (g_OffsetSignatureLevel < 0) g_OffsetSignatureLevel = g_OffsetProtection + 1;
     if (g_OffsetSectionSignatureLevel < 0) g_OffsetSectionSignatureLevel = g_OffsetProtection + 2;
     if (g_OffsetActiveProcessLinks < 0) g_OffsetActiveProcessLinks = 0x448;
 
-    DbgPrintEx(0, 0, "[Auxiliary] EPROCESS offsets: Protection=%ld SigLevel=%ld SecSig=%ld ActiveLinks=%ld\n",
-               g_OffsetProtection, g_OffsetSignatureLevel, g_OffsetSectionSignatureLevel, g_OffsetActiveProcessLinks);
+    DbgPrintEx(0, 0, "[Auxiliary] EPROCESS offsets: Protection=%ld Sig=%ld SecSig=%ld UniquePid=%ld ActiveLinks=%ld\n",
+               g_OffsetProtection, g_OffsetSignatureLevel, g_OffsetSectionSignatureLevel,
+               g_OffsetUniqueProcessId, g_OffsetActiveProcessLinks);
 }
 
 static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
@@ -200,28 +196,33 @@ static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status)) {
+        DbgPrintEx(0, 0, "[Auxiliary] PsLookupProcessByProcessId failed: 0x%lX\n", status);
+        return status;
+    }
 
     PUCHAR pProc = (PUCHAR)pEProcess;
-    /* 设置 Protection (PPL level) */
+    /* 写 Protection (PS_PROTECTION 1字节) */
     *(PUCHAR)(pProc + g_OffsetProtection) = protectionLevel;
-    /* 设置 SignatureLevel 和 SectionSignatureLevel 为 0x7 (Microsoft) */
+    /* SignatureLevel / SectionSignatureLevel 紧跟 Protection 之后 */
     if (g_OffsetSignatureLevel > 0) *(PUCHAR)(pProc + g_OffsetSignatureLevel) = 0x7;
     if (g_OffsetSectionSignatureLevel > 0) *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = 0x7;
 
     ObDereferenceObject(pEProcess);
-    DbgPrintEx(0, 0, "[Auxiliary] SetProcessProtection PID=%p level=0x%02X\n", pid, protectionLevel);
+    DbgPrintEx(0, 0, "[Auxiliary] SetProtection PID=%p level=0x%02X at offset=%ld\n",
+               pid, protectionLevel, g_OffsetProtection);
     return STATUS_SUCCESS;
 }
 
-/* 保存被隐藏进程的 ActiveProcessLinks，用于恢复 */
-static LIST_ENTRY g_HiddenLinks;
-static bool g_bHidden = false;
+/* 保存被隐藏进程的原始链表指针，用于恢复 */
+static LIST_ENTRY g_HiddenProcessLinks;
+static HANDLE g_HiddenPid = NULL;
+static bool g_bProcessHidden = false;
 
 static NTSTATUS AuxHideProcess(HANDLE pid)
 {
     if (g_OffsetActiveProcessLinks < 0) AuxFindOffsets();
-    if (g_bHidden) return STATUS_SUCCESS;
+    if (g_bProcessHidden) return STATUS_SUCCESS;
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
@@ -230,23 +231,28 @@ static NTSTATUS AuxHideProcess(HANDLE pid)
     PUCHAR pProc = (PUCHAR)pEProcess;
     PLIST_ENTRY pList = (PLIST_ENTRY)(pProc + g_OffsetActiveProcessLinks);
 
-    /* 保存原始链接，然后从链表摘除 */
-    g_HiddenLinks = *pList;
+    /* 保存原始前后指针 */
+    g_HiddenProcessLinks.Flink = pList->Flink;
+    g_HiddenProcessLinks.Blink = pList->Blink;
+    g_HiddenPid = pid;
+
+    /* 从链表摘除：前一个的Flink指向后一个，后一个的Blink指向前一个 */
     pList->Blink->Flink = pList->Flink;
     pList->Flink->Blink = pList->Blink;
-    /* 自引用，防止被遍历到时访问已释放内存 */
+
+    /* 自引用，防止被误遍历 */
     pList->Flink = pList;
     pList->Blink = pList;
 
-    g_bHidden = true;
+    g_bProcessHidden = true;
     ObDereferenceObject(pEProcess);
-    DbgPrintEx(0, 0, "[Auxiliary] HideProcess PID=%p (DKOM)\n", pid);
+    DbgPrintEx(0, 0, "[Auxiliary] HideProcess PID=%p at offset=%ld\n", pid, g_OffsetActiveProcessLinks);
     return STATUS_SUCCESS;
 }
 
 static NTSTATUS AuxUnhideProcess(HANDLE pid)
 {
-    if (!g_bHidden) return STATUS_SUCCESS;
+    if (!g_bProcessHidden || g_HiddenPid != pid) return STATUS_SUCCESS;
     if (g_OffsetActiveProcessLinks < 0) return STATUS_INVALID_PARAMETER;
 
     PEPROCESS pEProcess = NULL;
@@ -256,13 +262,14 @@ static NTSTATUS AuxUnhideProcess(HANDLE pid)
     PUCHAR pProc = (PUCHAR)pEProcess;
     PLIST_ENTRY pList = (PLIST_ENTRY)(pProc + g_OffsetActiveProcessLinks);
 
-    /* 恢复到原始链表位置 */
-    pList->Flink = g_HiddenLinks.Flink;
-    pList->Blink = g_HiddenLinks.Blink;
-    g_HiddenLinks.Flink->Blink = pList;
-    g_HiddenLinks.Blink->Flink = pList;
+    /* 恢复到原始位置 */
+    pList->Flink = g_HiddenProcessLinks.Flink;
+    pList->Blink = g_HiddenProcessLinks.Blink;
+    g_HiddenProcessLinks.Flink->Blink = pList;
+    g_HiddenProcessLinks.Blink->Flink = pList;
 
-    g_bHidden = false;
+    g_bProcessHidden = false;
+    g_HiddenPid = NULL;
     ObDereferenceObject(pEProcess);
     DbgPrintEx(0, 0, "[Auxiliary] UnhideProcess PID=%p\n", pid);
     return STATUS_SUCCESS;
@@ -640,10 +647,10 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
      */
     {
         LARGE_INTEGER delay;
-        delay.QuadPart = -200 * 10000;  /* 200ms，单位 100ns，负数表示相对时间 */
+        delay.QuadPart = -500 * 10000;  /* 500ms，确保所有 CPU 退出回调 */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
     }
-    DbgPrintEx(0, 0, "[Auxiliary] Waited 200ms for all CPUs to exit hook callback\n");
+    DbgPrintEx(0, 0, "[Auxiliary] Waited 500ms for all CPUs to exit hook callback\n");
 
     /* 删除符号链接和设备对象 */
     if (g_DosDeviceName.Buffer)

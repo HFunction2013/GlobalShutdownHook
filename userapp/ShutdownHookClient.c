@@ -770,14 +770,42 @@ static int CmdQuit(HANDLE hDriver)
         printf("[2/4] All hooks removed.\n");
     }
 
-    /* 3. 设置 Auxiliary quitting 状态（允许 terminate BgSrv / unload 驱动） */
+    /* 3. 通知 BgSrv 主动退出（释放驱动句柄，否则驱动无法卸载） */
+    {
+        HANDLE hGsh = CreateFileW(GSH_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hGsh != INVALID_HANDLE_VALUE) {
+            DWORD bytes = 0;
+            DeviceIoControl(hGsh, IOCTL_GSH_REQUEST_EXIT, NULL, 0, NULL, 0, &bytes, NULL);
+            CloseHandle(hGsh);
+            printf("[3/6] Exit request sent to BgSrv.\n");
+        }
+        /* 等待 BgSrv 退出（最多 5 秒，每 200ms 检查一次） */
+        for (int i = 0; i < 25; i++) {
+            Sleep(200);
+            HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (hSnap == INVALID_HANDLE_VALUE) break;
+            PROCESSENTRY32W pe; pe.dwSize = sizeof(pe);
+            BOOL found = FALSE;
+            if (Process32FirstW(hSnap, &pe)) {
+                do {
+                    if (_wcsicmp(pe.szExeFile, L"ShutdownHookBgSrv.exe") == 0) { found = TRUE; break; }
+                } while (Process32NextW(hSnap, &pe));
+            }
+            CloseHandle(hSnap);
+            if (!found) { printf("[OK] BgSrv exited.\n"); break; }
+        }
+    }
+
+    /* 4. 设置 Auxiliary quitting 状态（放行 terminate/unload） */
     HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hAux != INVALID_HANDLE_VALUE) {
         DWORD auxBytes = 0;
         DeviceIoControl(hAux, IOCTL_AUX_SET_QUITTING, NULL, 0, NULL, 0, &auxBytes, NULL);
-        printf("[3/4] Auxiliary QUITTING state set (blocks disabled).\n");
+        printf("[4/6] Auxiliary QUITTING state set.\n");
         CloseHandle(hAux);
     }
 
@@ -794,7 +822,7 @@ static int CmdQuit(HANDLE hDriver)
         wcscat_s(driverPath, MAX_PATH, L"GlobalShutdownHook.sys");
     }
 
-    printf("[4/4] Unloading drivers...\n");
+    printf("[6/6] Unloading Auxiliary driver...\n");
     int rc = GdrvUnloadDriver(driverPath);
     if (rc != 0) {
         fprintf(stderr, "[WARN] GdrvUnloadDriver(GSH) returned %d\n", rc);

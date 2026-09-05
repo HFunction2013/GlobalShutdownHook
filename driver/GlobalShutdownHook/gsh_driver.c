@@ -22,6 +22,7 @@ static PFN_ZW_SHUTDOWN_SYSTEM g_pfnZwShutdownSystem = NULL;
 
 /* 被拦截的关机次数统计（inline hook 不回调驱动，当前通过 BgSrv 辅助统计） */
 static volatile ULONG g_BlockedCount = 0;
+static volatile BOOLEAN g_ExitRequested = FALSE;
 
 /* ---- 前置声明 ---- */
 DRIVER_INITIALIZE DriverEntry;
@@ -40,6 +41,7 @@ static NTSTATUS GshIoctlSetPass(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlRmPass(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlShutdownNow(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlRequestExit(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 
 /* ---- 驱动入口 ---- */
@@ -483,7 +485,18 @@ static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp)
     status->FailedCount = failed;
     status->PendingCount = pending;
     status->BlockedCount = g_BlockedCount;
+    status->Reserved[0] = g_ExitRequested ? 1 : 0;
     Irp->IoStatus.Information = sizeof(GSH_LOCK_STATUS);
+    return STATUS_SUCCESS;
+}
+
+/* ---- IOCTL: REQUEST_EXIT（通知 BgSrv 退出） ---- */
+static NTSTATUS GshIoctlRequestExit(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    UNREFERENCED_PARAMETER(IrpSp);
+    g_ExitRequested = TRUE;
+    DbgPrintEx(0, 0, "[GSH] Exit requested by client.\n");
+    Irp->IoStatus.Information = 0;
     return STATUS_SUCCESS;
 }
 

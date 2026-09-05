@@ -433,6 +433,16 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 SafeExitProcess(0);
                 return 0;  /* 不会到达 */
             }
+            /* 客户端请求退出：先关闭驱动句柄（释放驱动引用），再安全退出 */
+            if (driverOk && g_currentStatus.Reserved[0] == 1) {
+                OutputDebugStringW(L"[GSH BgSrv] Exit requested by client, closing driver handle and exiting.\n");
+                if (g_hDriver != INVALID_HANDLE_VALUE) {
+                    CloseHandle(g_hDriver);
+                    g_hDriver = INVALID_HANDLE_VALUE;
+                }
+                SafeExitProcess(0);
+                return 0;
+            }
             if (driverOk) {
                 g_bDriverWasAvailable = TRUE;
             }
