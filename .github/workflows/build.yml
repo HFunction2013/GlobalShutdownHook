@@ -23,12 +23,8 @@ jobs:
   #  Job 1: Build kernel driver + user app on Windows
   # ============================================================
   build:
-    name: Build ${{ matrix.configuration }}
+    name: Build Release
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        configuration: [Release]
 
     steps:
       - name: Checkout
@@ -92,15 +88,15 @@ jobs:
       # --------------------------------------------------------
       # Build the solution
       # --------------------------------------------------------
-      - name: Build ${{ matrix.configuration }}|${{ env.PLATFORM }}
+      - name: Build Release|${{ env.PLATFORM }}
         shell: cmd
         run: |
-          msbuild %SOLUTION% /p:Configuration=${{ matrix.configuration }} /p:Platform=%PLATFORM% /m /v:minimal /nologo
+          msbuild %SOLUTION% /p:Configuration=Release /p:Platform=%PLATFORM% /m /v:minimal /nologo
 
       - name: List build output
         shell: pwsh
         run: |
-          $outDir = "bin\$env:PLATFORM\${{ matrix.configuration }}"
+          $outDir = "bin\$env:PLATFORM\Release"
           if (Test-Path $outDir) {
             Get-ChildItem $outDir | Select-Object Name, Length | Format-Table -AutoSize
           } else {
@@ -113,11 +109,11 @@ jobs:
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalShutdownHook-${{ env.PLATFORM }}-${{ matrix.configuration }}-bin
+          name: GlobalShutdownHook-${{ env.PLATFORM }}-Release-bin
           path: |
-            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.sys
-            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.exe
-            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.dll
+            bin/${{ env.PLATFORM }}/Release/*.sys
+            bin/${{ env.PLATFORM }}/Release/*.exe
+            bin/${{ env.PLATFORM }}/Release/*.dll
 
           if-no-files-found: error
           retention-days: 30
@@ -128,8 +124,8 @@ jobs:
       - name: Upload PDB symbols
         uses: actions/upload-artifact@v4
         with:
-          name: GlobalShutdownHook-${{ env.PLATFORM }}-${{ matrix.configuration }}-pdb
+          name: GlobalShutdownHook-${{ env.PLATFORM }}-Release-pdb
           path: |
-            bin/${{ env.PLATFORM }}/${{ matrix.configuration }}/*.pdb
+            bin/${{ env.PLATFORM }}/Release/*.pdb
           if-no-files-found: warn
           retention-days: 30
