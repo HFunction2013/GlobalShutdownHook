@@ -19,7 +19,7 @@ extern unsigned long GdrvGetLastStatus(void);
 
 static char g_lastError[256] = {0};
 
-static void SetLastError(const char* msg) {
+static void GshSetLastError(const char* msg) {
     strncpy_s(g_lastError, sizeof(g_lastError), msg, _TRUNCATE);
 }
 
@@ -56,7 +56,7 @@ GSH_API int Gsh_Init(void) {
     /* 1. 加载 GSH 驱动 */
     GetDriverPath(driverPath, L"GlobalShutdownHook.sys");
     int rc = GdrvLoadDriver(driverPath);
-    if (rc != 0) { SetLastError("Failed to load GSH driver"); return 1; }
+    if (rc != 0) { GshSetLastError("Failed to load GSH driver"); return 1; }
     Sleep(1500);
 
     /* 2. 启动 BgSrv */
@@ -101,24 +101,25 @@ GSH_API int Gsh_Init(void) {
         }
     }
 
-    SetLastError("OK");
+    GshSetLastError("OK");
     return 0;
 }
 
 GSH_API int Gsh_Quit(const wchar_t* password) {
     HANDLE hDriver = OpenGshDevice();
-    if (hDriver == INVALID_HANDLE_VALUE) { SetLastError("Cannot open GSH device"); return 1; }
+    if (hDriver == INVALID_HANDLE_VALUE) { GshSetLastError("Cannot open GSH device"); return 1; }
 
     DWORD bytes = 0;
 
     /* 1. 密码校验 (UNLOCK) */
     if (password && password[0]) {
-        wchar_t pwdBuf[64];
-        wcscpy_s(pwdBuf, 64, password);
-        if (!DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK, pwdBuf, sizeof(pwdBuf),
+        GSH_PASSWORD_INPUT pwdIn;
+        ZeroMemory(&pwdIn, sizeof(pwdIn));
+        wcscpy_s(pwdIn.OldPassword, GSH_MAX_PASS_LEN, password);
+        if (!DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK, &pwdIn, sizeof(pwdIn),
                              NULL, 0, &bytes, NULL)) {
             CloseHandle(hDriver);
-            SetLastError("Password verification failed");
+            GshSetLastError("Password verification failed");
             return 1;
         }
     }
@@ -144,67 +145,66 @@ GSH_API int Gsh_Quit(const wchar_t* password) {
     GdrvUnloadDriver(auxPath);
 
     CloseHandle(hDriver);
-    SetLastError("OK");
+    GshSetLastError("OK");
     return 0;
 }
 
 GSH_API int Gsh_Lock(void) {
     HANDLE hDriver = OpenGshDevice();
-    if (hDriver == INVALID_HANDLE_VALUE) { SetLastError("Cannot open GSH device"); return 1; }
+    if (hDriver == INVALID_HANDLE_VALUE) { GshSetLastError("Cannot open GSH device"); return 1; }
     DWORD bytes = 0;
     BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_LOCK, NULL, 0, NULL, 0, &bytes, NULL);
     CloseHandle(hDriver);
-    if (!ok) { SetLastError("Lock failed"); return 1; }
-    SetLastError("OK");
+    if (!ok) { GshSetLastError("Lock failed"); return 1; }
+    GshSetLastError("OK");
     return 0;
 }
 
 GSH_API int Gsh_Unlock(const wchar_t* password) {
     HANDLE hDriver = OpenGshDevice();
-    if (hDriver == INVALID_HANDLE_VALUE) { SetLastError("Cannot open GSH device"); return 1; }
+    if (hDriver == INVALID_HANDLE_VALUE) { GshSetLastError("Cannot open GSH device"); return 1; }
     DWORD bytes = 0;
-    wchar_t pwdBuf[64];
-    if (password && password[0]) wcscpy_s(pwdBuf, 64, password);
-    else pwdBuf[0] = L'\0';
-    BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK, pwdBuf, sizeof(pwdBuf),
+    GSH_PASSWORD_INPUT pwdIn;
+    ZeroMemory(&pwdIn, sizeof(pwdIn));
+    if (password && password[0]) wcscpy_s(pwdIn.OldPassword, GSH_MAX_PASS_LEN, password);
+    BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_UNLOCK, &pwdIn, sizeof(pwdIn),
                                NULL, 0, &bytes, NULL);
     CloseHandle(hDriver);
-    if (!ok) { SetLastError("Unlock failed (wrong password?)"); return 1; }
-    SetLastError("OK");
+    if (!ok) { GshSetLastError("Unlock failed (wrong password?)"); return 1; }
+    GshSetLastError("OK");
     return 0;
 }
 
 GSH_API int Gsh_QueryStatus(int* locked, int* blocked, int* hooked, int* failed, int* inqueue) {
     HANDLE hDriver = OpenGshDevice();
-    if (hDriver == INVALID_HANDLE_VALUE) { SetLastError("Cannot open GSH device"); return 1; }
+    if (hDriver == INVALID_HANDLE_VALUE) { GshSetLastError("Cannot open GSH device"); return 1; }
     DWORD bytes = 0;
-    GSH_STATUS status;
-    BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_QUERY_STATUS, NULL, 0,
-                               &status, sizeof(status), &bytes, NULL);
+    GSH_LOCK_STATUS lockStatus;
+    BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_QUERY_LOCK_STATUS, NULL, 0,
+                               &lockStatus, sizeof(lockStatus), &bytes, NULL);
     CloseHandle(hDriver);
-    if (!ok) { SetLastError("Query status failed"); return 1; }
-    if (locked) *locked = status.LockState;
-    if (blocked) *blocked = status.BlockedCount;
-    if (hooked) *hooked = status.HookedCount;
-    if (failed) *failed = status.FailedCount;
-    if (inqueue) *inqueue = status.InQueueCount;
-    SetLastError("OK");
+    if (!ok) { GshSetLastError("Query status failed"); return 1; }
+    if (locked) *locked = (int)lockStatus.LockState;
+    if (blocked) *blocked = (int)lockStatus.BlockedCount;
+    if (hooked) *hooked = (int)lockStatus.HookedCount;
+    if (failed) *failed = (int)lockStatus.FailedCount;
+    if (inqueue) *inqueue = (int)lockStatus.PendingCount;
+    GshSetLastError("OK");
     return 0;
 }
 
 GSH_API int Gsh_SetPassword(const wchar_t* oldPassword, const wchar_t* newPassword) {
     HANDLE hDriver = OpenGshDevice();
-    if (hDriver == INVALID_HANDLE_VALUE) { SetLastError("Cannot open GSH device"); return 1; }
+    if (hDriver == INVALID_HANDLE_VALUE) { GshSetLastError("Cannot open GSH device"); return 1; }
     DWORD bytes = 0;
-    GSH_PASSWORD_CHANGE pwdChange;
-    if (oldPassword) wcscpy_s(pwdChange.OldPassword, 64, oldPassword);
-    else pwdChange.OldPassword[0] = L'\0';
-    if (newPassword) wcscpy_s(pwdChange.NewPassword, 64, newPassword);
-    else pwdChange.NewPassword[0] = L'\0';
-    BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_SET_PASSWORD, &pwdChange, sizeof(pwdChange),
+    GSH_PASSWORD_INPUT pwdIn;
+    ZeroMemory(&pwdIn, sizeof(pwdIn));
+    if (oldPassword) wcscpy_s(pwdIn.OldPassword, GSH_MAX_PASS_LEN, oldPassword);
+    if (newPassword) wcscpy_s(pwdIn.NewPassword, GSH_MAX_PASS_LEN, newPassword);
+    BOOL ok = DeviceIoControl(hDriver, IOCTL_GSH_SET_PASS, &pwdIn, sizeof(pwdIn),
                                NULL, 0, &bytes, NULL);
     CloseHandle(hDriver);
-    if (!ok) { SetLastError("Set password failed"); return 1; }
-    SetLastError("OK");
+    if (!ok) { GshSetLastError("Set password failed"); return 1; }
+    GshSetLastError("OK");
     return 0;
 }

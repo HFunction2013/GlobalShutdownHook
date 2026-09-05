@@ -37,7 +37,9 @@ typedef void* PVOID;
 #define IOCTL_AUX_SET_QUITTING      CTL_CODE(FILE_DEVICE_UNKNOWN, AUX_IOCTL_BASE + 7, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 /* ---- 保护级别定义 (PPL) ---- */
+#ifndef PROTECTION_LEVEL_WINTCB
 #define PROTECTION_LEVEL_WINTCB     0x60
+#endif
 
 /* ---- 输入结构 ---- */
 typedef struct _AUX_PROTECTION_INPUT {
