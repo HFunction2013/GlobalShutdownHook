@@ -227,6 +227,9 @@ NTSTATUS GshDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
         case IOCTL_GSH_QUERY_LOCK_STATUS:
             status = GshIoctlQueryLockStatus(Irp, irpSp);
             break;
+        case IOCTL_GSH_REQUEST_EXIT:
+            status = GshIoctlRequestExit(Irp, irpSp);
+            break;
         default:
             status = STATUS_INVALID_DEVICE_REQUEST;
             break;

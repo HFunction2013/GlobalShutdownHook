@@ -679,31 +679,32 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
 
     /* 等待所有 CPU 退出 hook 回调，避免卸载后仍有 CPU 执行已释放的回调
      * GetCpuClock 恢复后，已进入回调的 CPU 可能仍在执行 InfinityCallback。
-     * 等待 2s 确保所有并发实例退出。
+     * 等待 10s 确保所有并发实例退出。
      */
     {
         LARGE_INTEGER delay;
-        delay.QuadPart = -500 * 10000 * 20; /* 2s，确保所有 CPU 退出回调 */
+        delay.QuadPart = -500 * 10000 * 20; /* 10s，确保所有 CPU 退出回调 */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
     }
     DbgPrintEx(0, 0, "[Auxiliary] Waited 2s for all CPUs to exit hook callback\n");
+    DbgPrintEx(0, 0, "[Auxiliary] Waited 500ms for all CPUs to exit hook callback\n");
 
     /* 删除符号链接和设备对象 */
-    // if (g_DosDeviceName.Buffer)
-    // {
-    //     IoDeleteSymbolicLink(&g_DosDeviceName);
-    //     RtlFreeUnicodeString(&g_DosDeviceName);
-    //     g_DosDeviceName.Buffer = NULL;
-    //     g_DosDeviceName.Length = 0;
-    //     g_DosDeviceName.MaximumLength = 0;
-    //     DbgPrintEx(0, 0, "[Auxiliary] Deleting SymbolicLink\n");
-    // }
-    // if (driver && driver->DeviceObject)
-    // {
-    //     DbgPrintEx(0, 0, "[Auxiliary] Deleting device %p\n", driver->DeviceObject);
-    //     IoDeleteDevice(driver->DeviceObject);
-    //     driver->DeviceObject = NULL;
-    // }
+    if (g_DosDeviceName.Buffer)
+    {
+        IoDeleteSymbolicLink(&g_DosDeviceName);
+        RtlFreeUnicodeString(&g_DosDeviceName);
+        g_DosDeviceName.Buffer = NULL;
+        g_DosDeviceName.Length = 0;
+        g_DosDeviceName.MaximumLength = 0;
+        DbgPrintEx(0, 0, "[Auxiliary] Deleting SymbolicLink\n");
+    }
+    if (driver && driver->DeviceObject)
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] Deleting device %p\n", driver->DeviceObject);
+        IoDeleteDevice(driver->DeviceObject);
+        driver->DeviceObject = NULL;
+    }
 
     DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys unloaded\n");
 }

@@ -761,14 +761,14 @@ static int CmdQuit(HANDLE hDriver)
         fprintf(stderr, "QUIT failed: password verification failed.\n");
         return 1;
     }
-    printf("[1/4] Password verified. Driver UNLOCKED.\n");
+    printf("[1/6] Password verified. Driver UNLOCKED.\n");
 
     /* 2. 删除所有 Hook */
     if (!DeviceIoControl(hDriver, IOCTL_GSH_UNHOOK_ALL,
                          NULL, 0, NULL, 0, &bytesReturned, NULL)) {
         fprintf(stderr, "[WARN] UNHOOK_ALL failed: %lu (continuing to unload driver)\n", GetLastError());
     } else {
-        printf("[2/4] All hooks removed.\n");
+        printf("[2/6] All hooks removed.\n");
     }
 
     /* 3. 通知 BgSrv 主动退出（释放驱动句柄，否则驱动无法卸载） */
@@ -799,7 +799,7 @@ static int CmdQuit(HANDLE hDriver)
         }
     }
 
-    /* 4. 设置 Auxiliary quitting 状态（放行 terminate/unload） */
+    /* 4. 设置 Auxiliary quitting 状态 */
     HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -810,7 +810,7 @@ static int CmdQuit(HANDLE hDriver)
         CloseHandle(hAux);
     }
 
-    /* 4. 卸载 GSH 驱动（BgSrv 检测到驱动不可用后自动安全退出） */
+    /* 5. 卸载 GSH 驱动 */
     WCHAR driverPath[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, driverPath, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) {
@@ -823,7 +823,7 @@ static int CmdQuit(HANDLE hDriver)
         wcscat_s(driverPath, MAX_PATH, L"GlobalShutdownHook.sys");
     }
 
-    printf("[6/6] Unloading Auxiliary driver...\n");
+    printf("[5/6] Unloading GSH driver...\n");
     int rc = GdrvUnloadDriver(driverPath);
     if (rc != 0) {
         fprintf(stderr, "[WARN] GdrvUnloadDriver(GSH) returned %d\n", rc);
@@ -831,7 +831,11 @@ static int CmdQuit(HANDLE hDriver)
         printf("[OK] GSH driver unloaded.\n");
     }
 
-    /* 卸载 Auxiliary 驱动 */
+    /* 等待 GSH hook 回调全部退出 + BgSrv 完全清理 */
+    Sleep(1500);
+
+    /* 6. 卸载 Auxiliary 驱动 */
+    printf("[6/6] Unloading Auxiliary driver...\n");
     WCHAR auxPath[MAX_PATH];
     wcscpy_s(auxPath, MAX_PATH, driverPath);
     WCHAR* auxSlash = wcsrchr(auxPath, L'\\');
