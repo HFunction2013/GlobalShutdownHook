@@ -693,7 +693,6 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
     if (g_DosDeviceName.Buffer)
     {
         IoDeleteSymbolicLink(&g_DosDeviceName);
-        RtlFreeUnicodeString(&g_DosDeviceName);
         g_DosDeviceName.Buffer = NULL;
         g_DosDeviceName.Length = 0;
         g_DosDeviceName.MaximumLength = 0;
@@ -761,7 +760,6 @@ DriverEntry(
     {
         DbgPrintEx(0, 0, "[Auxiliary] GetSyscallAddresses failed\n");
         IoDeleteSymbolicLink(&g_DosDeviceName);
-        RtlFreeUnicodeString(&g_DosDeviceName);
         IoDeleteDevice(g_DeviceObject);
         return STATUS_NOT_FOUND;
     }
@@ -770,7 +768,6 @@ DriverEntry(
     {
         DbgPrintEx(0, 0, "[Auxiliary] KHook::Initialize failed\n");
         IoDeleteSymbolicLink(&g_DosDeviceName);
-        RtlFreeUnicodeString(&g_DosDeviceName);
         IoDeleteDevice(g_DeviceObject);
         return STATUS_UNSUCCESSFUL;
     }
@@ -780,7 +777,6 @@ DriverEntry(
         DbgPrintEx(0, 0, "[Auxiliary] KHook::Start failed\n");
         KHook::Stop();
         IoDeleteSymbolicLink(&g_DosDeviceName);
-        RtlFreeUnicodeString(&g_DosDeviceName);
         IoDeleteDevice(g_DeviceObject);
         return STATUS_UNSUCCESSFUL;
     }
