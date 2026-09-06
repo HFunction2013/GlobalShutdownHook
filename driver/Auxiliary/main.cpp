@@ -689,21 +689,21 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
     DbgPrintEx(0, 0, "[Auxiliary] Waited 2s for all CPUs to exit hook callback\n");
 
     /* 删除符号链接和设备对象 */
-    if (g_DosDeviceName.Buffer)
-    {
-        IoDeleteSymbolicLink(&g_DosDeviceName);
-        RtlFreeUnicodeString(&g_DosDeviceName);
-        g_DosDeviceName.Buffer = NULL;
-        g_DosDeviceName.Length = 0;
-        g_DosDeviceName.MaximumLength = 0;
-        DbgPrintEx(0, 0, "[Auxiliary] Deleting SymbolicLink\n");
-    }
-    if (driver && driver->DeviceObject)
-    {
-        DbgPrintEx(0, 0, "[Auxiliary] Deleting device %p\n", driver->DeviceObject);
-        IoDeleteDevice(driver->DeviceObject);
-        driver->DeviceObject = NULL;
-    }
+    // if (g_DosDeviceName.Buffer)
+    // {
+    //     IoDeleteSymbolicLink(&g_DosDeviceName);
+    //     RtlFreeUnicodeString(&g_DosDeviceName);
+    //     g_DosDeviceName.Buffer = NULL;
+    //     g_DosDeviceName.Length = 0;
+    //     g_DosDeviceName.MaximumLength = 0;
+    //     DbgPrintEx(0, 0, "[Auxiliary] Deleting SymbolicLink\n");
+    // }
+    // if (driver && driver->DeviceObject)
+    // {
+    //     DbgPrintEx(0, 0, "[Auxiliary] Deleting device %p\n", driver->DeviceObject);
+    //     IoDeleteDevice(driver->DeviceObject);
+    //     driver->DeviceObject = NULL;
+    // }
 
     DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys unloaded\n");
 }
