@@ -647,10 +647,10 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
      */
     {
         LARGE_INTEGER delay;
-        delay.QuadPart = -500 * 10000;  /* 500ms，确保所有 CPU 退出回调 */
+        delay.QuadPart = -500 * 10000 * 20;  /* 2s，确保所有 CPU 退出回调 */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
     }
-    DbgPrintEx(0, 0, "[Auxiliary] Waited 500ms for all CPUs to exit hook callback\n");
+    DbgPrintEx(0, 0, "[Auxiliary] Waited 2s for all CPUs to exit hook callback\n");
 
     /* 删除符号链接和设备对象 */
     if (g_DosDeviceName.Buffer)
