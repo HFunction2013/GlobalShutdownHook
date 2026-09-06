@@ -46,7 +46,8 @@ static ULONG g_SyscallShutdown = 0;
 static ULONG g_SyscallPowerAction = 0;
 
 /* 从 nt-per-syscall.json 提取的跨版本 syscall 查找表 */
-typedef struct _AUX_SYSCALL_ENTRY {
+typedef struct _AUX_SYSCALL_ENTRY
+{
     ULONG Build;
     ULONG Unload;
     ULONG Terminate;
@@ -55,46 +56,51 @@ typedef struct _AUX_SYSCALL_ENTRY {
 } AUX_SYSCALL_ENTRY;
 
 static const AUX_SYSCALL_ENTRY g_AuxSyscallTable[] = {
-    { 10240, 425, 44, 408, 241 },
-    { 10586, 428, 44, 411, 243 },
-    { 14393, 434, 44, 417, 245 },
-    { 15063, 440, 44, 423, 248 },
-    { 16299, 444, 44, 426, 249 },
-    { 17134, 446, 44, 428, 250 },
-    { 17763, 447, 44, 429, 251 },
-    { 18362, 448, 44, 430, 252 },
-    { 18363, 448, 44, 430, 252 },
-    { 19041, 454, 44, 436, 257 },
-    { 19042, 454, 44, 436, 257 },
-    { 19043, 454, 44, 436, 257 },
-    { 19044, 456, 44, 438, 258 },
-    { 19045, 456, 44, 438, 258 },
-    { 20348, 462, 44, 444, 262 },
-    { 22000, 466, 44, 447, 263 },
-    { 22621, 470, 44, 451, 264 },
-    { 22631, 470, 44, 451, 264 },
-    { 26100, 473, 44, 454, 266 },
+    {10240, 425, 44, 408, 241},
+    {10586, 428, 44, 411, 243},
+    {14393, 434, 44, 417, 245},
+    {15063, 440, 44, 423, 248},
+    {16299, 444, 44, 426, 249},
+    {17134, 446, 44, 428, 250},
+    {17763, 447, 44, 429, 251},
+    {18362, 448, 44, 430, 252},
+    {18363, 448, 44, 430, 252},
+    {19041, 454, 44, 436, 257},
+    {19042, 454, 44, 436, 257},
+    {19043, 454, 44, 436, 257},
+    {19044, 456, 44, 438, 258},
+    {19045, 456, 44, 438, 258},
+    {20348, 462, 44, 444, 262},
+    {22000, 466, 44, 447, 263},
+    {22621, 470, 44, 451, 264},
+    {22631, 470, 44, 451, 264},
+    {26100, 473, 44, 454, 266},
 };
 static const ULONG g_AuxSyscallTableCount = 19;
 
 /* 根据 build number 查找 syscall 号 (向下取整) */
 static bool AuxLookupSyscallNumbers(ULONG buildNumber)
 {
-    const AUX_SYSCALL_ENTRY* best = NULL;
-    for (ULONG i = 0; i < g_AuxSyscallTableCount; i++) {
-        if (g_AuxSyscallTable[i].Build <= buildNumber) {
+    const AUX_SYSCALL_ENTRY *best = NULL;
+    for (ULONG i = 0; i < g_AuxSyscallTableCount; i++)
+    {
+        if (g_AuxSyscallTable[i].Build <= buildNumber)
+        {
             best = &g_AuxSyscallTable[i];
-        } else {
+        }
+        else
+        {
             break;
         }
     }
-    if (!best) return false;
+    if (!best)
+        return false;
     g_SyscallUnload = best->Unload;
     g_SyscallTerminate = best->Terminate;
     g_SyscallShutdown = best->Shutdown;
     g_SyscallPowerAction = best->PowerAction;
     DbgPrintEx(0, 0, "[Auxiliary] Syscall lookup for build %lu: Unload=%lu Terminate=%lu Shutdown=%lu PowerAction=%lu\n",
-        buildNumber, g_SyscallUnload, g_SyscallTerminate, g_SyscallShutdown, g_SyscallPowerAction);
+               buildNumber, g_SyscallUnload, g_SyscallTerminate, g_SyscallShutdown, g_SyscallPowerAction);
     return true;
 }
 
@@ -102,10 +108,10 @@ static bool AuxLookupSyscallNumbers(ULONG buildNumber)
  *  syscall 函数类型定义
  * ============================================================ */
 
-typedef NTSTATUS(NTAPI* NtUnloadDriver_t)(PUNICODE_STRING DriverServiceName);
-typedef NTSTATUS(NTAPI* NtTerminateProcess_t)(HANDLE ProcessHandle, NTSTATUS ExitStatus);
-typedef NTSTATUS(NTAPI* NtShutdownSystem_t)(ULONG ShutdownAction);
-typedef NTSTATUS(NTAPI* NtInitiatePowerAction_t)(
+typedef NTSTATUS(NTAPI *NtUnloadDriver_t)(PUNICODE_STRING DriverServiceName);
+typedef NTSTATUS(NTAPI *NtTerminateProcess_t)(HANDLE ProcessHandle, NTSTATUS ExitStatus);
+typedef NTSTATUS(NTAPI *NtShutdownSystem_t)(ULONG ShutdownAction);
+typedef NTSTATUS(NTAPI *NtInitiatePowerAction_t)(
     POWER_ACTION Action,
     SYSTEM_POWER_STATE MinSystemState,
     ULONG Flags,
@@ -118,12 +124,18 @@ typedef NTSTATUS(NTAPI* NtInitiatePowerAction_t)(
 /* 自定义宽字符串子串查找（不依赖 CRT wcsstr，内核安全） */
 static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
 {
-    if (!str || !search || !*search) return str;
+    if (!str || !search || !*search)
+        return str;
     for (; *str; str++)
     {
         PWCHAR s1 = str, s2 = search;
-        while (*s1 && *s2 && (*s1 == *s2)) { s1++; s2++; }
-        if (!*s2) return str;
+        while (*s1 && *s2 && (*s1 == *s2))
+        {
+            s1++;
+            s2++;
+        }
+        if (!*s2)
+            return str;
     }
     return NULL;
 }
@@ -147,10 +159,12 @@ static LONG g_OffsetUniqueProcessId = -1;
 static LONG AuxExtractDisp32(PVOID funcAddr, UCHAR opcode1, UCHAR opcode2, UCHAR modrm)
 {
     PUCHAR p = (PUCHAR)funcAddr;
-    for (int i = 0; i < 32; i++) {
-        if (p[i] == opcode1 && p[i+1] == opcode2 && p[i+2] == modrm) {
+    for (int i = 0; i < 32; i++)
+    {
+        if (p[i] == opcode1 && p[i + 1] == opcode2 && p[i + 2] == modrm)
+        {
             LONG disp = 0;
-            RtlCopyMemory(&disp, &p[i+3], 4);
+            RtlCopyMemory(&disp, &p[i + 3], 4);
             return disp;
         }
     }
@@ -164,10 +178,12 @@ static void AuxFindOffsets(void)
     /* PsGetProcessId -> UniqueProcessId 偏移 */
     RtlInitUnicodeString(&funcName, L"PsGetProcessId");
     PVOID pFn = MmGetSystemRoutineAddress(&funcName);
-    if (pFn) {
+    if (pFn)
+    {
         g_OffsetUniqueProcessId = AuxExtractDisp32(pFn, 0x8B, 0x81, 0x81);
         /* ActiveProcessLinks 在 UniqueProcessId 之后 8 字节 (Win10/11 x64) */
-        if (g_OffsetUniqueProcessId > 0) {
+        if (g_OffsetUniqueProcessId > 0)
+        {
             g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + 8;
         }
     }
@@ -175,15 +191,20 @@ static void AuxFindOffsets(void)
     /* PsGetProcessProtection -> Protection 偏移 */
     RtlInitUnicodeString(&funcName, L"PsGetProcessProtection");
     pFn = MmGetSystemRoutineAddress(&funcName);
-    if (pFn) {
+    if (pFn)
+    {
         g_OffsetProtection = AuxExtractDisp32(pFn, 0x0F, 0xB6, 0x81);
     }
 
     /* 兜底：常见版本偏移（Win10 1903+ / Win11） */
-    if (g_OffsetProtection < 0) g_OffsetProtection = 0x6FA;
-    if (g_OffsetSignatureLevel < 0) g_OffsetSignatureLevel = g_OffsetProtection + 1;
-    if (g_OffsetSectionSignatureLevel < 0) g_OffsetSectionSignatureLevel = g_OffsetProtection + 2;
-    if (g_OffsetActiveProcessLinks < 0) g_OffsetActiveProcessLinks = 0x448;
+    if (g_OffsetProtection < 0)
+        g_OffsetProtection = 0x6FA;
+    if (g_OffsetSignatureLevel < 0)
+        g_OffsetSignatureLevel = g_OffsetProtection + 1;
+    if (g_OffsetSectionSignatureLevel < 0)
+        g_OffsetSectionSignatureLevel = g_OffsetProtection + 2;
+    if (g_OffsetActiveProcessLinks < 0)
+        g_OffsetActiveProcessLinks = 0x448;
 
     DbgPrintEx(0, 0, "[Auxiliary] EPROCESS offsets: Protection=%ld Sig=%ld SecSig=%ld UniquePid=%ld ActiveLinks=%ld\n",
                g_OffsetProtection, g_OffsetSignatureLevel, g_OffsetSectionSignatureLevel,
@@ -192,11 +213,13 @@ static void AuxFindOffsets(void)
 
 static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
 {
-    if (g_OffsetProtection < 0) AuxFindOffsets();
+    if (g_OffsetProtection < 0)
+        AuxFindOffsets();
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status))
+    {
         DbgPrintEx(0, 0, "[Auxiliary] PsLookupProcessByProcessId failed: 0x%lX\n", status);
         return status;
     }
@@ -205,8 +228,10 @@ static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
     /* 写 Protection (PS_PROTECTION 1字节) */
     *(PUCHAR)(pProc + g_OffsetProtection) = protectionLevel;
     /* SignatureLevel / SectionSignatureLevel 紧跟 Protection 之后 */
-    if (g_OffsetSignatureLevel > 0) *(PUCHAR)(pProc + g_OffsetSignatureLevel) = 0x7;
-    if (g_OffsetSectionSignatureLevel > 0) *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = 0x7;
+    if (g_OffsetSignatureLevel > 0)
+        *(PUCHAR)(pProc + g_OffsetSignatureLevel) = 0x7;
+    if (g_OffsetSectionSignatureLevel > 0)
+        *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = 0x7;
 
     ObDereferenceObject(pEProcess);
     DbgPrintEx(0, 0, "[Auxiliary] SetProtection PID=%p level=0x%02X at offset=%ld\n",
@@ -221,12 +246,15 @@ static bool g_bProcessHidden = false;
 
 static NTSTATUS AuxHideProcess(HANDLE pid)
 {
-    if (g_OffsetActiveProcessLinks < 0) AuxFindOffsets();
-    if (g_bProcessHidden) return STATUS_SUCCESS;
+    if (g_OffsetActiveProcessLinks < 0)
+        AuxFindOffsets();
+    if (g_bProcessHidden)
+        return STATUS_SUCCESS;
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status))
+        return status;
 
     PUCHAR pProc = (PUCHAR)pEProcess;
     PLIST_ENTRY pList = (PLIST_ENTRY)(pProc + g_OffsetActiveProcessLinks);
@@ -252,12 +280,15 @@ static NTSTATUS AuxHideProcess(HANDLE pid)
 
 static NTSTATUS AuxUnhideProcess(HANDLE pid)
 {
-    if (!g_bProcessHidden || g_HiddenPid != pid) return STATUS_SUCCESS;
-    if (g_OffsetActiveProcessLinks < 0) return STATUS_INVALID_PARAMETER;
+    if (!g_bProcessHidden || g_HiddenPid != pid)
+        return STATUS_SUCCESS;
+    if (g_OffsetActiveProcessLinks < 0)
+        return STATUS_INVALID_PARAMETER;
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
-    if (!NT_SUCCESS(status)) return status;
+    if (!NT_SUCCESS(status))
+        return status;
 
     PUCHAR pProc = (PUCHAR)pEProcess;
     PLIST_ENTRY pList = (PLIST_ENTRY)(pProc + g_OffsetActiveProcessLinks);
@@ -278,7 +309,8 @@ static NTSTATUS AuxUnhideProcess(HANDLE pid)
 static NTSTATUS NTAPI FakeNtUnloadDriver(PUNICODE_STRING DriverServiceName)
 {
     /* quitting 状态下放行所有卸载（包括我们自己的驱动） */
-    if (g_Quitting) {
+    if (g_Quitting)
+    {
         return ((NtUnloadDriver_t)g_OriginalNtUnloadDriver)(DriverServiceName);
     }
     /* 只阻止卸载我们自己的两个驱动: Auxiliary.sys 和 GlobalShutdownHook.sys */
@@ -300,7 +332,7 @@ static NTSTATUS NTAPI FakeNtUnloadDriver(PUNICODE_STRING DriverServiceName)
                 ProbeForRead(userBuf, len, 1);
             }
         }
-        __except(EXCEPTION_EXECUTE_HANDLER)
+        __except (EXCEPTION_EXECUTE_HANDLER)
         {
             len = 0;
             userBuf = NULL;
@@ -317,7 +349,7 @@ static NTSTATUS NTAPI FakeNtUnloadDriver(PUNICODE_STRING DriverServiceName)
                 {
                     RtlCopyMemory(safeBuf, userBuf, len);
                 }
-                __except(EXCEPTION_EXECUTE_HANDLER)
+                __except (EXCEPTION_EXECUTE_HANDLER)
                 {
                     ExFreePoolWithTag(safeBuf, 'AuxU');
                     safeBuf = NULL;
@@ -355,7 +387,7 @@ static NTSTATUS NTAPI FakeNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS Exit
     {
         PEPROCESS pProcess = NULL;
         if (NT_SUCCESS(ObReferenceObjectByHandle(ProcessHandle, 0x1000,
-            NULL, KernelMode, (PVOID*)&pProcess, NULL)))
+                                                 NULL, KernelMode, (PVOID *)&pProcess, NULL)))
         {
             HANDLE targetPid = PsGetProcessId(pProcess);
             ObDereferenceObject(pProcess);
@@ -399,9 +431,10 @@ static NTSTATUS NTAPI FakeNtInitiatePowerAction(
  *  在 syscall 入口被调用，可以替换 syscall 函数指针
  * ============================================================ */
 
-void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID* pSsdtAddress)
+void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID *pSsdtAddress)
 {
-    if (!pSsdtAddress) return;
+    if (!pSsdtAddress)
+        return;
 
     /* 优先使用函数地址匹配 (MmGetSystemRoutineAddress 成功时) */
     if (!g_UseSyscallIndex)
@@ -465,25 +498,29 @@ static bool GetSyscallAddresses()
     WCHAR nameUnload[] = L"NtUnloadDriver";
     RtlInitUnicodeString(&str, nameUnload);
     g_pNtUnloadDriver = MmGetSystemRoutineAddress(&str);
-    if (g_pNtUnloadDriver) resolvedCount++;
+    if (g_pNtUnloadDriver)
+        resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtUnloadDriver: %p\n", g_pNtUnloadDriver);
 
     WCHAR nameTerminate[] = L"NtTerminateProcess";
     RtlInitUnicodeString(&str, nameTerminate);
     g_pNtTerminateProcess = MmGetSystemRoutineAddress(&str);
-    if (g_pNtTerminateProcess) resolvedCount++;
+    if (g_pNtTerminateProcess)
+        resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtTerminateProcess: %p\n", g_pNtTerminateProcess);
 
     WCHAR nameShutdown[] = L"NtShutdownSystem";
     RtlInitUnicodeString(&str, nameShutdown);
     g_pNtShutdownSystem = MmGetSystemRoutineAddress(&str);
-    if (g_pNtShutdownSystem) resolvedCount++;
+    if (g_pNtShutdownSystem)
+        resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtShutdownSystem: %p\n", g_pNtShutdownSystem);
 
     WCHAR namePower[] = L"NtInitiatePowerAction";
     RtlInitUnicodeString(&str, namePower);
     g_pNtInitiatePowerAction = MmGetSystemRoutineAddress(&str);
-    if (g_pNtInitiatePowerAction) resolvedCount++;
+    if (g_pNtInitiatePowerAction)
+        resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtInitiatePowerAction: %p\n", g_pNtInitiatePowerAction);
 
     /* 如果全部解析成功，使用函数地址匹配 */
@@ -499,7 +536,7 @@ static bool GetSyscallAddresses()
     g_UseSyscallIndex = true;
 
     /* 获取当前系统 build number */
-    RTL_OSVERSIONINFOW osvi = { 0 };
+    RTL_OSVERSIONINFOW osvi = {0};
     osvi.dwOSVersionInfoSize = sizeof(osvi);
     if (!NT_SUCCESS(RtlGetVersion(&osvi)))
     {
@@ -635,7 +672,6 @@ static NTSTATUS AuxCreateClose(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 
 VOID DriverUnload(PDRIVER_OBJECT driver)
 {
-    UNREFERENCED_PARAMETER(driver);
     DbgPrintEx(0, 0, "[Auxiliary] Unloading Auxiliary.sys\n");
 
     /* 停止 InfinityHook */
@@ -643,11 +679,11 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
 
     /* 等待所有 CPU 退出 hook 回调，避免卸载后仍有 CPU 执行已释放的回调
      * GetCpuClock 恢复后，已进入回调的 CPU 可能仍在执行 InfinityCallback。
-     * 等待 200ms 确保所有并发实例退出。
+     * 等待 2s 确保所有并发实例退出。
      */
     {
         LARGE_INTEGER delay;
-        delay.QuadPart = -500 * 10000 * 20;  /* 2s，确保所有 CPU 退出回调 */
+        delay.QuadPart = -500 * 10000 * 20; /* 2s，确保所有 CPU 退出回调 */
         KeDelayExecutionThread(KernelMode, FALSE, &delay);
     }
     DbgPrintEx(0, 0, "[Auxiliary] Waited 2s for all CPUs to exit hook callback\n");
@@ -657,10 +693,16 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
     {
         IoDeleteSymbolicLink(&g_DosDeviceName);
         RtlFreeUnicodeString(&g_DosDeviceName);
+        g_DosDeviceName.Buffer = NULL;
+        g_DosDeviceName.Length = 0;
+        g_DosDeviceName.MaximumLength = 0;
+        DbgPrintEx(0, 0, "[Auxiliary] Deleting SymbolicLink\n");
     }
-    if (driver->DeviceObject)
+    if (driver && driver->DeviceObject)
     {
+        DbgPrintEx(0, 0, "[Auxiliary] Deleting device %p\n", driver->DeviceObject);
         IoDeleteDevice(driver->DeviceObject);
+        driver->DeviceObject = NULL;
     }
 
     DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys unloaded\n");
