@@ -1,24 +1,16 @@
 #pragma once
 
+// 包含内核头文件 (提供 UCHAR/DWORD/ULONG_PTR/PVOID/NonPagedPool 等类型和函数)
+#include "../headers.hpp"
+
 // 照抄 PPLcontrol common.h (用户态 printf 宏去掉，只保留类型定义)
 
 // 内核模式 C++ new/delete 实现 (内核态无默认 new/delete)
-inline void* __cdecl operator new(size_t size)
-{
-    return ExAllocatePoolWithTag(NonPagedPool, size, 'PPL1');
-}
-inline void __cdecl operator delete(void* p)
-{
-    if (p) ExFreePoolWithTag(p, 'PPL1');
-}
-inline void* __cdecl operator new[](size_t size)
-{
-    return ExAllocatePoolWithTag(NonPagedPool, size, 'PPL1');
-}
-inline void __cdecl operator delete[](void* p)
-{
-    if (p) ExFreePoolWithTag(p, 'PPL1');
-}
+// 注意: 不能用 inline (C4595), 直接放头文件里重复定义也没事, 链接器会合并
+void* __cdecl operator new(size_t size);
+void  __cdecl operator delete(void* p);
+void* __cdecl operator new[](size_t size);
+void  __cdecl operator delete[](void* p);
 
 #define NOOP do {} while(0)
 

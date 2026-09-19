@@ -1,5 +1,23 @@
 #include "Controller.h"
 
+// 内核模式 C++ new/delete 实现 (放在一个 .cpp 里，避免多重定义)
+void* __cdecl operator new(size_t size)
+{
+    return ExAllocatePoolWithTag(NonPagedPool, size, 'PPL1');
+}
+void __cdecl operator delete(void* p)
+{
+    if (p) ExFreePoolWithTag(p, 'PPL1');
+}
+void* __cdecl operator new[](size_t size)
+{
+    return ExAllocatePoolWithTag(NonPagedPool, size, 'PPL1');
+}
+void __cdecl operator delete[](void* p)
+{
+    if (p) ExFreePoolWithTag(p, 'PPL1');
+}
+
 // 照抄 PPLcontrol Controller.cpp 的全部逻辑
 // 最小内核适配:
 //   1. LPCWSTR 字符串参数 → UCHAR 数值参数 (内核不需要字符串解析)
