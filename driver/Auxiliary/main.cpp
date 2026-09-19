@@ -162,8 +162,6 @@ static bool g_bProcessHidden = false;
 
 static NTSTATUS AuxHideProcess(HANDLE pid)
 {
-    if (g_OffsetActiveProcessLinks < 0)
-        AuxUpdateActiveProcessLinksOffset();
     if (g_bProcessHidden)
         return STATUS_SUCCESS;
 
@@ -198,8 +196,6 @@ static NTSTATUS AuxUnhideProcess(HANDLE pid)
 {
     if (!g_bProcessHidden || g_HiddenPid != pid)
         return STATUS_SUCCESS;
-    if (g_OffsetActiveProcessLinks < 0)
-        return STATUS_INVALID_PARAMETER;
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
