@@ -141,80 +141,326 @@ static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
 }
 
 /* ============================================================
- *  PPL / DKOM 实现 (参考 PPLcontrol / nyxppl 的动态偏移查找)
+ *  PPL / DKOM 实现 (照抄 itm4n/PPLcontrol 的 OffsetFinder + Utils + Controller)
+ *  仓库: https://github.com/itm4n/PPLcontrol
  * ============================================================ */
 
-/* EPROCESS 偏移（运行时动态查找） */
+/* ---- 照抄 PPLcontrol common.h: PS_PROTECTED_TYPE / PS_PROTECTED_SIGNER ---- */
+typedef enum _PS_PROTECTED_TYPE
+{
+    PsProtectedTypeNone = 0,
+    PsProtectedTypeProtectedLight = 1,
+    PsProtectedTypeProtected = 2
+} PS_PROTECTED_TYPE;
+
+typedef enum _PS_PROTECTED_SIGNER
+{
+    PsProtectedSignerNone = 0,
+    PsProtectedSignerAuthenticode = 1,
+    PsProtectedSignerCodeGen = 2,
+    PsProtectedSignerAntimalware = 3,
+    PsProtectedSignerLsa = 4,
+    PsProtectedSignerWindows = 5,
+    PsProtectedSignerWinTcb = 6,
+    PsProtectedSignerWinSystem = 7,
+    PsProtectedSignerApp = 8,
+    PsProtectedSignerMax = 9
+} PS_PROTECTED_SIGNER;
+
+/* ---- 照抄 PPLcontrol Utils.h: SE_SIGNING_LEVEL 常量 ---- */
+#define SE_SIGNING_LEVEL_UNCHECKED       0x00
+#define SE_SIGNING_LEVEL_UNSIGNED        0x01
+#define SE_SIGNING_LEVEL_ENTERPRISE     0x02
+#define SE_SIGNING_LEVEL_DEVELOPER      0x03
+#define SE_SIGNING_LEVEL_AUTHENTICODE   0x04
+#define SE_SIGNING_LEVEL_CUSTOM_2       0x05
+#define SE_SIGNING_LEVEL_STORE          0x06
+#define SE_SIGNING_LEVEL_ANTIMALWARE    0x07
+#define SE_SIGNING_LEVEL_MICROSOFT      0x08
+#define SE_SIGNING_LEVEL_CUSTOM_4        0x09
+#define SE_SIGNING_LEVEL_CUSTOM_5        0x0A
+#define SE_SIGNING_LEVEL_DYNAMIC_CODEGEN 0x0B
+#define SE_SIGNING_LEVEL_WINDOWS        0x0C
+#define SE_SIGNING_LEVEL_CUSTOM_7       0x0D
+#define SE_SIGNING_LEVEL_WINDOWS_TCB    0x0E
+#define SE_SIGNING_LEVEL_CUSTOM_6        0x0F
+
+/* EPROCESS 偏移（运行时动态查找，照抄 PPLcontrol OffsetFinder） */
 static LONG g_OffsetProtection = -1;
 static LONG g_OffsetSignatureLevel = -1;
 static LONG g_OffsetSectionSignatureLevel = -1;
 static LONG g_OffsetActiveProcessLinks = -1;
 static LONG g_OffsetUniqueProcessId = -1;
 
+/* ---- 照抄 PPLcontrol OffsetFinder.cpp: 偏移查找 ---- */
+
 /*
- * 从函数反汇编中提取 EPROCESS 偏移（PPLcontrol 方式）
- * PsGetProcessProtection: 0F B6 81 <disp32> C3  -> movzx eax, byte ptr [rcx+disp32]
- * PsGetProcessId:          8B 81 <disp32> C3     -> mov eax, [rcx+disp32]
+ * 照抄 FindProcessUniqueProcessIdOffset:
+ *   PsGetProcessId (x64): mov eax, [rcx+disp16]  ->  disp16 在函数偏移 +3 处
  */
-static LONG AuxExtractDisp32(PVOID funcAddr, UCHAR opcode1, UCHAR opcode2, UCHAR modrm)
+static BOOL AuxFindProcessUniqueProcessIdOffset(void)
 {
-    PUCHAR p = (PUCHAR)funcAddr;
-    for (int i = 0; i < 32; i++)
-    {
-        if (p[i] == opcode1 && p[i + 1] == opcode2 && p[i + 2] == modrm)
-        {
-            LONG disp = 0;
-            RtlCopyMemory(&disp, &p[i + 3], 4);
-            return disp;
-        }
-    }
-    return -1;
+    UNICODE_STRING funcName;
+    RtlInitUnicodeString(&funcName, L"PsGetProcessId");
+    PVOID pPsGetProcessId = MmGetSystemRoutineAddress(&funcName);
+    if (!pPsGetProcessId)
+        return FALSE;
+
+    WORD wUniqueProcessIdOffset = 0;
+    RtlCopyMemory(&wUniqueProcessIdOffset, (PUCHAR)pPsGetProcessId + 3, sizeof(WORD));
+
+    if (wUniqueProcessIdOffset > 0x0FFF)
+        return FALSE;
+
+    g_OffsetUniqueProcessId = wUniqueProcessIdOffset;
+    return TRUE;
 }
 
-static void AuxFindOffsets(void)
+/*
+ * 照抄 FindProcessActiveProcessLinksOffset:
+ *   ActiveProcessLinks = UniqueProcessId + sizeof(HANDLE)
+ */
+static BOOL AuxFindProcessActiveProcessLinksOffset(void)
+{
+    if (g_OffsetUniqueProcessId <= 0)
+        return FALSE;
+
+    g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + (LONG)sizeof(HANDLE);
+    return TRUE;
+}
+
+/*
+ * 照抄 FindProcessProtectionOffset:
+ *   PsIsProtectedProcess / PsIsProtectedProcessLight (x64):
+ *   mov al, [cl+disp16]  ->  disp16 在函数偏移 +2 处
+ *   两个函数交叉验证偏移一致
+ */
+static BOOL AuxFindProcessProtectionOffset(void)
 {
     UNICODE_STRING funcName;
 
-    /* PsGetProcessId -> UniqueProcessId 偏移 */
-    RtlInitUnicodeString(&funcName, L"PsGetProcessId");
-    PVOID pFn = MmGetSystemRoutineAddress(&funcName);
-    if (pFn)
-    {
-        g_OffsetUniqueProcessId = AuxExtractDisp32(pFn, 0x8B, 0x81, 0x81);
-        /* ActiveProcessLinks 在 UniqueProcessId 之后 8 字节 (Win10/11 x64) */
-        if (g_OffsetUniqueProcessId > 0)
-        {
-            g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + 8;
-        }
-    }
+    RtlInitUnicodeString(&funcName, L"PsIsProtectedProcess");
+    PVOID pPsIsProtectedProcess = MmGetSystemRoutineAddress(&funcName);
+    if (!pPsIsProtectedProcess)
+        return FALSE;
 
-    /* PsGetProcessProtection -> Protection 偏移 */
-    RtlInitUnicodeString(&funcName, L"PsGetProcessProtection");
-    pFn = MmGetSystemRoutineAddress(&funcName);
-    if (pFn)
-    {
-        g_OffsetProtection = AuxExtractDisp32(pFn, 0x0F, 0xB6, 0x81);
-    }
+    RtlInitUnicodeString(&funcName, L"PsIsProtectedProcessLight");
+    PVOID pPsIsProtectedProcessLight = MmGetSystemRoutineAddress(&funcName);
+    if (!pPsIsProtectedProcessLight)
+        return FALSE;
 
-    /* 兜底：常见版本偏移（Win10 1903+ / Win11） */
+    WORD wProtectionOffsetA = 0, wProtectionOffsetB = 0;
+    RtlCopyMemory(&wProtectionOffsetA, (PUCHAR)pPsIsProtectedProcess + 2, sizeof(WORD));
+    RtlCopyMemory(&wProtectionOffsetB, (PUCHAR)pPsIsProtectedProcessLight + 2, sizeof(WORD));
+
+    if (wProtectionOffsetA != wProtectionOffsetB || wProtectionOffsetA > 0x0FFF)
+        return FALSE;
+
+    g_OffsetProtection = wProtectionOffsetA;
+    return TRUE;
+}
+
+/*
+ * 照抄 FindProcessSignatureLevelOffset:
+ *   SignatureLevel = Protection - 2 (2 字节之前)
+ */
+static BOOL AuxFindProcessSignatureLevelOffset(void)
+{
+    if (g_OffsetProtection <= 0)
+        return FALSE;
+
+    g_OffsetSignatureLevel = g_OffsetProtection - (2 * (LONG)sizeof(UCHAR));
+    return TRUE;
+}
+
+/*
+ * 照抄 FindProcessSectionSignatureLevelOffset:
+ *   SectionSignatureLevel = Protection - 1 (1 字节之前)
+ */
+static BOOL AuxFindProcessSectionSignatureLevelOffset(void)
+{
+    if (g_OffsetProtection <= 0)
+        return FALSE;
+
+    g_OffsetSectionSignatureLevel = g_OffsetProtection - (LONG)sizeof(UCHAR);
+    return TRUE;
+}
+
+/* 照抄 FindAllOffsets */
+static BOOL AuxFindAllOffsets(void)
+{
+    if (!AuxFindProcessUniqueProcessIdOffset())
+        return FALSE;
+    if (!AuxFindProcessActiveProcessLinksOffset())
+        return FALSE;
+    if (!AuxFindProcessProtectionOffset())
+        return FALSE;
+    if (!AuxFindProcessSignatureLevelOffset())
+        return FALSE;
+    if (!AuxFindProcessSectionSignatureLevelOffset())
+        return FALSE;
+    return TRUE;
+}
+
+/* 兜底偏移（Win10 1903+ / Win11 常见值） */
+static void AuxApplyFallbackOffsets(void)
+{
     if (g_OffsetProtection < 0)
         g_OffsetProtection = 0x6FA;
     if (g_OffsetSignatureLevel < 0)
-        g_OffsetSignatureLevel = g_OffsetProtection + 1;
+        g_OffsetSignatureLevel = g_OffsetProtection - 2;
     if (g_OffsetSectionSignatureLevel < 0)
-        g_OffsetSectionSignatureLevel = g_OffsetProtection + 2;
+        g_OffsetSectionSignatureLevel = g_OffsetProtection - 1;
+    if (g_OffsetUniqueProcessId < 0)
+        g_OffsetUniqueProcessId = 0x440;
     if (g_OffsetActiveProcessLinks < 0)
-        g_OffsetActiveProcessLinks = 0x448;
-
-    DbgPrintEx(0, 0, "[Auxiliary] EPROCESS offsets: Protection=%ld Sig=%ld SecSig=%ld UniquePid=%ld ActiveLinks=%ld\n",
-               g_OffsetProtection, g_OffsetSignatureLevel, g_OffsetSectionSignatureLevel,
-               g_OffsetUniqueProcessId, g_OffsetActiveProcessLinks);
+        g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + (LONG)sizeof(HANDLE);
 }
 
+/* ---- 照抄 PPLcontrol Utils.cpp: 保护编码 / 签名级别查表 ---- */
+
+/* 照抄 Utils::GetProtectionLevel: Protection & 0x07 */
+static UCHAR AuxGetProtectionLevel(UCHAR Protection)
+{
+    return Protection & 0x07;
+}
+
+/* 照抄 Utils::GetSignerType: (Protection & 0xF0) >> 4 */
+static UCHAR AuxGetSignerType(UCHAR Protection)
+{
+    return (Protection & 0xF0) >> 4;
+}
+
+/* 照抄 Utils::GetProtection: (SignerType << 4) | ProtectionLevel */
+static UCHAR AuxGetProtection(UCHAR ProtectionLevel, UCHAR SignerType)
+{
+    return ((UCHAR)SignerType << 4) | (UCHAR)ProtectionLevel;
+}
+
+/* 照抄 Utils::GetSignatureLevel: 根据 SignerType 查 SignatureLevel */
+static UCHAR AuxGetSignatureLevel(UCHAR SignerType)
+{
+    switch (SignerType)
+    {
+    case PsProtectedSignerNone:
+        return SE_SIGNING_LEVEL_UNCHECKED;
+    case PsProtectedSignerAuthenticode:
+        return SE_SIGNING_LEVEL_AUTHENTICODE;
+    case PsProtectedSignerCodeGen:
+        return SE_SIGNING_LEVEL_DYNAMIC_CODEGEN;
+    case PsProtectedSignerAntimalware:
+        return SE_SIGNING_LEVEL_ANTIMALWARE;
+    case PsProtectedSignerLsa:
+        return SE_SIGNING_LEVEL_WINDOWS;
+    case PsProtectedSignerWindows:
+        return SE_SIGNING_LEVEL_WINDOWS;
+    case PsProtectedSignerWinTcb:
+        return SE_SIGNING_LEVEL_WINDOWS_TCB;
+    default:
+        return 0xFF;
+    }
+}
+
+/* 照抄 Utils::GetSectionSignatureLevel: 根据 SignerType 查 SectionSignatureLevel */
+static UCHAR AuxGetSectionSignatureLevel(UCHAR SignerType)
+{
+    switch (SignerType)
+    {
+    case PsProtectedSignerNone:
+        return SE_SIGNING_LEVEL_UNCHECKED;
+    case PsProtectedSignerAuthenticode:
+        return SE_SIGNING_LEVEL_AUTHENTICODE;
+    case PsProtectedSignerCodeGen:
+        return SE_SIGNING_LEVEL_STORE;
+    case PsProtectedSignerAntimalware:
+        return SE_SIGNING_LEVEL_ANTIMALWARE;
+    case PsProtectedSignerLsa:
+        return SE_SIGNING_LEVEL_MICROSOFT;
+    case PsProtectedSignerWindows:
+        return SE_SIGNING_LEVEL_WINDOWS;
+    case PsProtectedSignerWinTcb:
+        /* 照抄 PPLcontrol: WinTcb 的 SectionSignatureLevel 实际是 Windows */
+        return SE_SIGNING_LEVEL_WINDOWS;
+    default:
+        return 0xFF;
+    }
+}
+
+/* ---- 照抄 PPLcontrol Controller.cpp: ProtectProcess / UnprotectProcess ---- */
+
+/*
+ * 照抄 Controller::ProtectProcess:
+ *   1. 写 Protection 字节 = (SignerType << 4) | ProtectionLevel
+ *   2. 写 SignatureLevel (根据 SignerType 查表)
+ *   3. 写 SectionSignatureLevel (根据 SignerType 查表)
+ */
+static NTSTATUS AuxProtectProcess(PEPROCESS pEProcess, UCHAR bProtectionLevel, UCHAR bSignerType)
+{
+    PUCHAR pProc = (PUCHAR)pEProcess;
+
+    /* 步骤1: SetProcessProtection (照抄 Controller::SetProcessProtection(Addr, Protection)) */
+    UCHAR bProtectionNew = AuxGetProtection(bProtectionLevel, bSignerType);
+    *(PUCHAR)(pProc + g_OffsetProtection) = bProtectionNew;
+
+    /* 步骤2: SetProcessSignatureLevel (照抄 Controller::SetProcessSignatureLevel) */
+    UCHAR bSignatureLevel = AuxGetSignatureLevel(bSignerType);
+    if (bSignatureLevel != 0xFF)
+    {
+        *(PUCHAR)(pProc + g_OffsetSignatureLevel) = bSignatureLevel;
+    }
+
+    /* 步骤3: SetProcessSectionSignatureLevel (照抄 Controller::SetProcessSectionSignatureLevel) */
+    UCHAR bSectionSignatureLevel = AuxGetSectionSignatureLevel(bSignerType);
+    if (bSectionSignatureLevel != 0xFF)
+    {
+        *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = bSectionSignatureLevel;
+    }
+
+    DbgPrintEx(0, 0, "[Auxiliary] ProtectProcess: protection=0x%02X sig=0x%02X secsig=0x%02X\n",
+               bProtectionNew, bSignatureLevel, bSectionSignatureLevel);
+    return STATUS_SUCCESS;
+}
+
+/*
+ * 照抄 Controller::UnprotectProcess:
+ *   1. 写 Protection = 0
+ *   2. 写 SignatureLevel = SE_SIGNING_LEVEL_UNCHECKED (0x00)
+ *   3. 写 SectionSignatureLevel = SE_SIGNING_LEVEL_UNCHECKED (0x00)
+ */
+static NTSTATUS AuxUnprotectProcess(PEPROCESS pEProcess)
+{
+    PUCHAR pProc = (PUCHAR)pEProcess;
+
+    /* 步骤1: SetProcessProtection(Addr, 0) */
+    *(PUCHAR)(pProc + g_OffsetProtection) = 0;
+
+    /* 步骤2: SetProcessSignatureLevel(Addr, SE_SIGNING_LEVEL_UNCHECKED) */
+    *(PUCHAR)(pProc + g_OffsetSignatureLevel) = SE_SIGNING_LEVEL_UNCHECKED;
+
+    /* 步骤3: SetProcessSectionSignatureLevel(Addr, SE_SIGNING_LEVEL_UNCHECKED) */
+    *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = SE_SIGNING_LEVEL_UNCHECKED;
+
+    DbgPrintEx(0, 0, "[Auxiliary] UnprotectProcess\n");
+    return STATUS_SUCCESS;
+}
+
+/*
+ * 统一入口: 照抄 PPLcontrol 的 SetProcessProtection(DWORD Pid, ...) 流程
+ *   - 输入 protectionLevel 为 PPLcontrol 编码格式: (SignerType << 4) | Level
+ *   - Level == 0 -> UnprotectProcess
+ *   - Level > 0  -> ProtectProcess
+ */
 static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
 {
-    if (g_OffsetProtection < 0)
-        AuxFindOffsets();
+    /* 照抄 OffsetFinder::FindAllOffsets */
+    if (g_OffsetProtection < 0 || g_OffsetSignatureLevel < 0 || g_OffsetSectionSignatureLevel < 0)
+    {
+        if (!AuxFindAllOffsets())
+        {
+            DbgPrintEx(0, 0, "[Auxiliary] AuxFindAllOffsets failed, using fallback offsets\n");
+            AuxApplyFallbackOffsets();
+        }
+    }
 
     PEPROCESS pEProcess = NULL;
     NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
@@ -224,18 +470,26 @@ static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
         return status;
     }
 
-    PUCHAR pProc = (PUCHAR)pEProcess;
-    /* 写 Protection (PS_PROTECTION 1字节) */
-    *(PUCHAR)(pProc + g_OffsetProtection) = protectionLevel;
-    /* SignatureLevel / SectionSignatureLevel 紧跟 Protection 之后 */
-    if (g_OffsetSignatureLevel > 0)
-        *(PUCHAR)(pProc + g_OffsetSignatureLevel) = 0x7;
-    if (g_OffsetSectionSignatureLevel > 0)
-        *(PUCHAR)(pProc + g_OffsetSectionSignatureLevel) = 0x7;
+    /* 照抄 Controller::SetProcessProtection 中的解码逻辑 */
+    UCHAR bProtectionLevel = AuxGetProtectionLevel(protectionLevel);
+    UCHAR bSignerType = AuxGetSignerType(protectionLevel);
+
+    /* 照抄 Controller::ProtectProcess / UnprotectProcess 分支 */
+    if (bProtectionLevel == PsProtectedTypeNone)
+    {
+        /* UnprotectProcess 流程 */
+        AuxUnprotectProcess(pEProcess);
+    }
+    else
+    {
+        /* ProtectProcess 流程 */
+        AuxProtectProcess(pEProcess, bProtectionLevel, bSignerType);
+    }
 
     ObDereferenceObject(pEProcess);
-    DbgPrintEx(0, 0, "[Auxiliary] SetProtection PID=%p level=0x%02X at offset=%ld\n",
-               pid, protectionLevel, g_OffsetProtection);
+    DbgPrintEx(0, 0, "[Auxiliary] SetProtection PID=%p input=0x%02X level=%u signer=%u at offsets P=%ld S=%ld SS=%ld\n",
+               pid, protectionLevel, bProtectionLevel, bSignerType,
+               g_OffsetProtection, g_OffsetSignatureLevel, g_OffsetSectionSignatureLevel);
     return STATUS_SUCCESS;
 }
 
@@ -247,7 +501,10 @@ static bool g_bProcessHidden = false;
 static NTSTATUS AuxHideProcess(HANDLE pid)
 {
     if (g_OffsetActiveProcessLinks < 0)
-        AuxFindOffsets();
+    {
+        if (!AuxFindAllOffsets())
+            AuxApplyFallbackOffsets();
+    }
     if (g_bProcessHidden)
         return STATUS_SUCCESS;
 

@@ -28,9 +28,16 @@ typedef unsigned char UCHAR;
 #define IOCTL_AUX_HIDE_PROCESS      CTL_CODE(FILE_DEVICE_UNKNOWN, AUX_IOCTL_BASE + 5, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_AUX_UNHIDE_PROCESS    CTL_CODE(FILE_DEVICE_UNKNOWN, AUX_IOCTL_BASE + 6, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_AUX_SET_QUITTING      CTL_CODE(FILE_DEVICE_UNKNOWN, AUX_IOCTL_BASE + 7, METHOD_BUFFERED, FILE_ANY_ACCESS)
-/* ---- 保护级别定义 (PPL) ---- */
+/* ---- 保护级别定义 (PPL, 照抄 PPLcontrol 编码: (SignerType << 4) | Level) ---- */
+/* PS_PROTECTED_TYPE: 0=None, 1=PPL(ProtectedLight), 2=PP(Protected) */
+/* PS_PROTECTED_SIGNER: 6=WinTcb */
+/* WinTcb PPL = (6 << 4) | 1 = 0x61; WinTcb PP = (6 << 4) | 2 = 0x62 */
 #ifndef PROTECTION_LEVEL_WINTCB
-#define PROTECTION_LEVEL_WINTCB     0x60
+#define PROTECTION_LEVEL_WINTCB     0x61
+#endif
+/* 解除保护: ProtectionLevel = 0 */
+#ifndef PROTECTION_LEVEL_NONE
+#define PROTECTION_LEVEL_NONE       0x00
 #endif
 /* ---- 输入结构 ---- */
 typedef struct _AUX_PROTECTION_INPUT {
