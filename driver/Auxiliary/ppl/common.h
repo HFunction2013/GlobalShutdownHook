@@ -12,11 +12,13 @@ typedef PULONG64 PDWORD64;
 // 照抄 PPLcontrol common.h (用户态 printf 宏去掉，只保留类型定义)
 
 // 内核模式 C++ new/delete 实现 (内核态无默认 new/delete)
-// 注意: 不能用 inline (C4595), 直接放头文件里重复定义也没事, 链接器会合并
+// 注意: C++14 以后 delete 调用的是带 size_t 的 sized delete 版本
 void* __cdecl operator new(size_t size);
 void  __cdecl operator delete(void* p);
+void  __cdecl operator delete(void* p, size_t size);
 void* __cdecl operator new[](size_t size);
 void  __cdecl operator delete[](void* p);
+void  __cdecl operator delete[](void* p, size_t size);
 
 #define NOOP do {} while(0)
 

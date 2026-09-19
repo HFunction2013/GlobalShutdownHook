@@ -1,6 +1,7 @@
 #include "Controller.h"
 
 // 内核模式 C++ new/delete 实现 (放在一个 .cpp 里，避免多重定义)
+// 注意: C++14 以后 delete 调用的是带 size_t 的 sized delete 版本
 void* __cdecl operator new(size_t size)
 {
     return ExAllocatePoolWithTag(NonPagedPool, size, 'PPL1');
@@ -9,12 +10,22 @@ void __cdecl operator delete(void* p)
 {
     if (p) ExFreePoolWithTag(p, 'PPL1');
 }
+void __cdecl operator delete(void* p, size_t size)
+{
+    UNREFERENCED_PARAMETER(size);
+    if (p) ExFreePoolWithTag(p, 'PPL1');
+}
 void* __cdecl operator new[](size_t size)
 {
     return ExAllocatePoolWithTag(NonPagedPool, size, 'PPL1');
 }
 void __cdecl operator delete[](void* p)
 {
+    if (p) ExFreePoolWithTag(p, 'PPL1');
+}
+void __cdecl operator delete[](void* p, size_t size)
+{
+    UNREFERENCED_PARAMETER(size);
     if (p) ExFreePoolWithTag(p, 'PPL1');
 }
 
