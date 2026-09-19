@@ -88,10 +88,6 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="hook.cpp" />
     <ClCompile Include="hde\hde64.cpp" />
-    <ClCompile Include="ppl\Utils.cpp" />
-    <ClCompile Include="ppl\OffsetFinder.cpp" />
-    <ClCompile Include="ppl\RTCore.cpp" />
-    <ClCompile Include="ppl\Controller.cpp" />
     <ClInclude Include="Auxiliary.h" />
     <ClInclude Include="hook.hpp" />
     <ClInclude Include="headers.hpp" />
@@ -101,11 +97,6 @@
     <ClInclude Include="hde\hde64.h" />
     <ClInclude Include="hde\pstdint.h" />
     <ClInclude Include="hde\table64.h" />
-    <ClInclude Include="ppl\common.h" />
-    <ClInclude Include="ppl\Utils.h" />
-    <ClInclude Include="ppl\OffsetFinder.h" />
-    <ClInclude Include="ppl\RTCore.h" />
-    <ClInclude Include="ppl\Controller.h" />
   </ItemGroup>
   <!-- INF file kept in repo for manual installation; excluded from build
        to avoid InfVerif.dll dependency on CI runners. -->

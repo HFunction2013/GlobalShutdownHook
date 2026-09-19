@@ -85,12 +85,28 @@ jobs:
         uses: microsoft/setup-msbuild@v3
 
       # --------------------------------------------------------
-      # Build the solution
+      # Build the main solution (GlobalShutdownHook driver + user apps)
       # --------------------------------------------------------
-      - name: Build Release|${{ env.PLATFORM }}
+      - name: Build GlobalShutdownHook Release|${{ env.PLATFORM }}
         shell: cmd
         run: |
           msbuild %SOLUTION% /p:Configuration=Release /p:Platform=%PLATFORM% /m /v:minimal /nologo
+
+      # --------------------------------------------------------
+      # Build PPLControl (user-mode EXE, independent project)
+      # --------------------------------------------------------
+      - name: Build PPLControl Release|${{ env.PLATFORM }}
+        shell: cmd
+        run: |
+          msbuild external\PPLcontrol\PPLcontrol.sln /p:Configuration=Release /p:Platform=%PLATFORM% /m /v:minimal /nologo
+
+      # --------------------------------------------------------
+      # Build HideProcessesDKOM (kernel driver, independent project)
+      # --------------------------------------------------------
+      - name: Build HideProcessesDKOM Release|${{ env.PLATFORM }}
+        shell: cmd
+        run: |
+          msbuild external\HideProcessesDKOM\HideProcess\HideProcess.sln /p:Configuration=Release /p:Platform=%PLATFORM% /m /v:minimal /nologo
 
       - name: List build output
         shell: pwsh
@@ -101,6 +117,38 @@ jobs:
           } else {
             Write-Output "Output directory not found: $outDir"
           }
+          # PPLControl output
+          $pplOut = "external\PPLcontrol\PPLcontrol\bin\$env:PLATFORM\Release"
+          if (Test-Path $pplOut) {
+            Write-Output "`nPPLControl output:"
+            Get-ChildItem $pplOut | Select-Object Name, Length | Format-Table -AutoSize
+          }
+          # HideProcess output
+          $dkomOut = "external\HideProcessesDKOM\HideProcess\HideProcess\x64\Release"
+          if (Test-Path $dkomOut) {
+            Write-Output "`nHideProcess output:"
+            Get-ChildItem $dkomOut | Select-Object Name, Length | Format-Table -AutoSize
+          }
+
+      # --------------------------------------------------------
+      # Copy all binaries to a single output dir for upload
+      # --------------------------------------------------------
+      - name: Collect all binaries
+        shell: pwsh
+        run: |
+          $outDir = "bin\$env:PLATFORM\Release"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          # Copy PPLControl.exe
+          $pplExe = Get-ChildItem -Path "external\PPLcontrol" -Filter "PPLcontrol.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($pplExe) { Copy-Item $pplExe.FullName $outDir -Force; Write-Output "Copied: $($pplExe.Name)" }
+
+          # Copy HideProcess.sys
+          $dkomSys = Get-ChildItem -Path "external\HideProcessesDKOM" -Filter "HideProcess.sys" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($dkomSys) { Copy-Item $dkomSys.FullName $outDir -Force; Write-Output "Copied: $($dkomSys.Name)" }
+
+          # Copy RTCore64.sys if present (BYOVD, not built from source)
+          Write-Output "Note: RTCore64.sys must be provided separately (BYOVD driver)"
 
       # --------------------------------------------------------
       # Upload artifacts - Binaries only

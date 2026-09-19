@@ -14,7 +14,6 @@
 #include "hook.hpp"
 #include "imports.hpp"
 #include "Auxiliary.h"
-#include "ppl/Controller.h"
 
 /* ============================================================
  *  全局变量
@@ -142,61 +141,18 @@ static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
 }
 
 /* ============================================================
- *  PPL 实现 — 直接集成 itm4n/PPLcontrol 源码
- *  仓库: https://github.com/itm4n/PPLcontrol
- *  最小内核适配: RTCore → 直接内存读写, GetProcAddress → MmGetSystemRoutineAddress
+ *  PPL 操作入口 (PPLControl 作为独立项目使用，这里留空 stub)
+ *  独立项目: https://github.com/itm4n/PPLcontrol
  * ============================================================ */
 
-/* PPLControl 集成实例 (在 DriverEntry 中初始化) */
-static Controller* g_Ppl = NULL;
-static OffsetFinder* g_Of = NULL;
+static LONG g_OffsetActiveProcessLinks = 0x448; /* Win10 1903+ */
 
-/* 供 Hide/Unhide 使用的 ActiveProcessLinks 偏移 (从 OffsetFinder 获取) */
-static LONG g_OffsetActiveProcessLinks = -1;
-
-/* 从 OffsetFinder 提取 ActiveProcessLinks 偏移 (供 Hide/Unhide 使用) */
-static void AuxUpdateActiveProcessLinksOffset(void)
-{
-    if (g_Of)
-        g_OffsetActiveProcessLinks = (LONG)g_Of->GetOffset(Offset::ProcessActiveProcessLinks);
-    if (g_OffsetActiveProcessLinks <= 0)
-        g_OffsetActiveProcessLinks = 0x448; /* fallback: Win10 1903+ */
-}
-
-/*
- * 统一入口: 照抄 PPLcontrol 的 ProtectProcess / UnprotectProcess
- *   输入 protectionLevel 为 PPLcontrol 编码格式: (SignerType << 4) | Level
- *   Level == 0 -> UnprotectProcess
- *   Level > 0  -> ProtectProcess
- */
 static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
 {
-    if (!g_Ppl)
-        return STATUS_UNSUCCESSFUL;
-
-    /* 照抄 PPLcontrol Utils::GetProtectionLevel / GetSignerType 解码 */
-    UCHAR bProtectionLevel = Utils::GetProtectionLevel(protectionLevel);
-    UCHAR bSignerType = Utils::GetSignerType(protectionLevel);
-
-    DWORD dwPid = (DWORD)(ULONG_PTR)pid;
-    bool bResult = false;
-
-    /* 照抄 PPLcontrol Controller::ProtectProcess / UnprotectProcess 分支 */
-    if (bProtectionLevel == PsProtectedTypeNone)
-    {
-        /* UnprotectProcess 流程 (照抄 PPLcontrol) */
-        bResult = g_Ppl->UnprotectProcess(dwPid);
-    }
-    else
-    {
-        /* ProtectProcess 流程 (照抄 PPLcontrol) */
-        bResult = g_Ppl->ProtectProcess(dwPid, bProtectionLevel, bSignerType);
-    }
-
-    DbgPrintEx(0, 0, "[Auxiliary] SetProtection PID=%p input=0x%02X level=%u signer=%u result=%d\n",
-               pid, protectionLevel, bProtectionLevel, bSignerType, bResult);
-
-    return bResult ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+    UNREFERENCED_PARAMETER(pid);
+    UNREFERENCED_PARAMETER(protectionLevel);
+    DbgPrintEx(0, 0, "[Auxiliary] AuxSetProcessProtection: PPLControl is independent, use PPLControl.exe directly\n");
+    return STATUS_SUCCESS;
 }
 
 /* 保存被隐藏进程的原始链表指针，用于恢复 */
@@ -665,10 +621,6 @@ VOID DriverUnload(PDRIVER_OBJECT driver)
         driver->DeviceObject = NULL;
     }
 
-    /* 清理 PPLControl 集成实例 */
-    if (g_Ppl) { delete g_Ppl; g_Ppl = NULL; }
-    if (g_Of)  { delete g_Of;  g_Of = NULL; }
-
     DbgPrintEx(0, 0, "[Auxiliary] Auxiliary.sys unloaded\n");
 }
 
@@ -746,18 +698,6 @@ DriverEntry(
     }
 
     DbgPrintEx(0, 0, "[Auxiliary] InfinityHook started successfully\n");
-
-    /* 初始化 PPLControl 集成实例 (照抄 PPLcontrol Controller) */
-    g_Of = new OffsetFinder();
-    if (g_Of)
-    {
-        g_Of->FindAllOffsets();
-        AuxUpdateActiveProcessLinksOffset();
-    }
-    g_Ppl = new Controller();
-    DbgPrintEx(0, 0, "[Auxiliary] PPLController initialized (Protection offset=%lu, Sig offset=%lu)\n",
-               g_Of ? g_Of->GetOffset(Offset::ProcessProtection) : 0,
-               g_Of ? g_Of->GetOffset(Offset::ProcessSignatureLevel) : 0);
 
     return STATUS_SUCCESS;
 }

