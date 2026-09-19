@@ -167,23 +167,55 @@ typedef enum _PS_PROTECTED_SIGNER
     PsProtectedSignerMax = 9
 } PS_PROTECTED_SIGNER;
 
-/* ---- 照抄 PPLcontrol Utils.h: SE_SIGNING_LEVEL 常量 ---- */
+/* ---- 照抄 PPLcontrol Utils.h: SE_SIGNING_LEVEL 常量 (ntddk.h 已定义, 加 #ifndef 防重定义) ---- */
+#ifndef SE_SIGNING_LEVEL_UNCHECKED
 #define SE_SIGNING_LEVEL_UNCHECKED       0x00
+#endif
+#ifndef SE_SIGNING_LEVEL_UNSIGNED
 #define SE_SIGNING_LEVEL_UNSIGNED        0x01
+#endif
+#ifndef SE_SIGNING_LEVEL_ENTERPRISE
 #define SE_SIGNING_LEVEL_ENTERPRISE     0x02
+#endif
+#ifndef SE_SIGNING_LEVEL_DEVELOPER
 #define SE_SIGNING_LEVEL_DEVELOPER      0x03
+#endif
+#ifndef SE_SIGNING_LEVEL_AUTHENTICODE
 #define SE_SIGNING_LEVEL_AUTHENTICODE   0x04
+#endif
+#ifndef SE_SIGNING_LEVEL_CUSTOM_2
 #define SE_SIGNING_LEVEL_CUSTOM_2       0x05
+#endif
+#ifndef SE_SIGNING_LEVEL_STORE
 #define SE_SIGNING_LEVEL_STORE          0x06
+#endif
+#ifndef SE_SIGNING_LEVEL_ANTIMALWARE
 #define SE_SIGNING_LEVEL_ANTIMALWARE    0x07
+#endif
+#ifndef SE_SIGNING_LEVEL_MICROSOFT
 #define SE_SIGNING_LEVEL_MICROSOFT      0x08
+#endif
+#ifndef SE_SIGNING_LEVEL_CUSTOM_4
 #define SE_SIGNING_LEVEL_CUSTOM_4        0x09
+#endif
+#ifndef SE_SIGNING_LEVEL_CUSTOM_5
 #define SE_SIGNING_LEVEL_CUSTOM_5        0x0A
+#endif
+#ifndef SE_SIGNING_LEVEL_DYNAMIC_CODEGEN
 #define SE_SIGNING_LEVEL_DYNAMIC_CODEGEN 0x0B
+#endif
+#ifndef SE_SIGNING_LEVEL_WINDOWS
 #define SE_SIGNING_LEVEL_WINDOWS        0x0C
+#endif
+#ifndef SE_SIGNING_LEVEL_CUSTOM_7
 #define SE_SIGNING_LEVEL_CUSTOM_7       0x0D
+#endif
+#ifndef SE_SIGNING_LEVEL_WINDOWS_TCB
 #define SE_SIGNING_LEVEL_WINDOWS_TCB    0x0E
+#endif
+#ifndef SE_SIGNING_LEVEL_CUSTOM_6
 #define SE_SIGNING_LEVEL_CUSTOM_6        0x0F
+#endif
 
 /* EPROCESS 偏移（运行时动态查找，照抄 PPLcontrol OffsetFinder） */
 static LONG g_OffsetProtection = -1;
@@ -198,35 +230,35 @@ static LONG g_OffsetUniqueProcessId = -1;
  * 照抄 FindProcessUniqueProcessIdOffset:
  *   PsGetProcessId (x64): mov eax, [rcx+disp16]  ->  disp16 在函数偏移 +3 处
  */
-static BOOL AuxFindProcessUniqueProcessIdOffset(void)
+static bool AuxFindProcessUniqueProcessIdOffset(void)
 {
     UNICODE_STRING funcName;
     RtlInitUnicodeString(&funcName, L"PsGetProcessId");
     PVOID pPsGetProcessId = MmGetSystemRoutineAddress(&funcName);
     if (!pPsGetProcessId)
-        return FALSE;
+        return false;
 
     WORD wUniqueProcessIdOffset = 0;
     RtlCopyMemory(&wUniqueProcessIdOffset, (PUCHAR)pPsGetProcessId + 3, sizeof(WORD));
 
     if (wUniqueProcessIdOffset > 0x0FFF)
-        return FALSE;
+        return false;
 
     g_OffsetUniqueProcessId = wUniqueProcessIdOffset;
-    return TRUE;
+    return true;
 }
 
 /*
  * 照抄 FindProcessActiveProcessLinksOffset:
  *   ActiveProcessLinks = UniqueProcessId + sizeof(HANDLE)
  */
-static BOOL AuxFindProcessActiveProcessLinksOffset(void)
+static bool AuxFindProcessActiveProcessLinksOffset(void)
 {
     if (g_OffsetUniqueProcessId <= 0)
-        return FALSE;
+        return false;
 
     g_OffsetActiveProcessLinks = g_OffsetUniqueProcessId + (LONG)sizeof(HANDLE);
-    return TRUE;
+    return true;
 }
 
 /*
@@ -235,71 +267,71 @@ static BOOL AuxFindProcessActiveProcessLinksOffset(void)
  *   mov al, [cl+disp16]  ->  disp16 在函数偏移 +2 处
  *   两个函数交叉验证偏移一致
  */
-static BOOL AuxFindProcessProtectionOffset(void)
+static bool AuxFindProcessProtectionOffset(void)
 {
     UNICODE_STRING funcName;
 
     RtlInitUnicodeString(&funcName, L"PsIsProtectedProcess");
     PVOID pPsIsProtectedProcess = MmGetSystemRoutineAddress(&funcName);
     if (!pPsIsProtectedProcess)
-        return FALSE;
+        return false;
 
     RtlInitUnicodeString(&funcName, L"PsIsProtectedProcessLight");
     PVOID pPsIsProtectedProcessLight = MmGetSystemRoutineAddress(&funcName);
     if (!pPsIsProtectedProcessLight)
-        return FALSE;
+        return false;
 
     WORD wProtectionOffsetA = 0, wProtectionOffsetB = 0;
     RtlCopyMemory(&wProtectionOffsetA, (PUCHAR)pPsIsProtectedProcess + 2, sizeof(WORD));
     RtlCopyMemory(&wProtectionOffsetB, (PUCHAR)pPsIsProtectedProcessLight + 2, sizeof(WORD));
 
     if (wProtectionOffsetA != wProtectionOffsetB || wProtectionOffsetA > 0x0FFF)
-        return FALSE;
+        return false;
 
     g_OffsetProtection = wProtectionOffsetA;
-    return TRUE;
+    return true;
 }
 
 /*
  * 照抄 FindProcessSignatureLevelOffset:
  *   SignatureLevel = Protection - 2 (2 字节之前)
  */
-static BOOL AuxFindProcessSignatureLevelOffset(void)
+static bool AuxFindProcessSignatureLevelOffset(void)
 {
     if (g_OffsetProtection <= 0)
-        return FALSE;
+        return false;
 
     g_OffsetSignatureLevel = g_OffsetProtection - (2 * (LONG)sizeof(UCHAR));
-    return TRUE;
+    return true;
 }
 
 /*
  * 照抄 FindProcessSectionSignatureLevelOffset:
  *   SectionSignatureLevel = Protection - 1 (1 字节之前)
  */
-static BOOL AuxFindProcessSectionSignatureLevelOffset(void)
+static bool AuxFindProcessSectionSignatureLevelOffset(void)
 {
     if (g_OffsetProtection <= 0)
-        return FALSE;
+        return false;
 
     g_OffsetSectionSignatureLevel = g_OffsetProtection - (LONG)sizeof(UCHAR);
-    return TRUE;
+    return true;
 }
 
 /* 照抄 FindAllOffsets */
-static BOOL AuxFindAllOffsets(void)
+static bool AuxFindAllOffsets(void)
 {
     if (!AuxFindProcessUniqueProcessIdOffset())
-        return FALSE;
+        return false;
     if (!AuxFindProcessActiveProcessLinksOffset())
-        return FALSE;
+        return false;
     if (!AuxFindProcessProtectionOffset())
-        return FALSE;
+        return false;
     if (!AuxFindProcessSignatureLevelOffset())
-        return FALSE;
+        return false;
     if (!AuxFindProcessSectionSignatureLevelOffset())
-        return FALSE;
-    return TRUE;
+        return false;
+    return true;
 }
 
 /* 兜底偏移（Win10 1903+ / Win11 常见值） */
