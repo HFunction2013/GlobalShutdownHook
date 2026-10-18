@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <tlhelp32.h>
 #include "../driver/GlobalShutdownHook/gsh_common.h"
+#include "../driver/Auxiliary/Auxiliary.h"
 
 /* 用户态 Windows.h 未定义 NT_SUCCESS，手动定义 */
 #ifndef NT_SUCCESS
@@ -275,6 +276,14 @@ static ULONG     g_lastLockState = 0xFFFFFFFF;
 static ULONG     g_localBlockedCount = 0;  /* BgSrv 本地辅助统计 */
 static BOOL      g_bDriverWasAvailable = FALSE;  /* 跟踪驱动是否之前可用 */
 
+/* issue #2: 关闭拦截。仅在合法退出路径（驱动被卸载 / 客户端请求退出）前置 TRUE，
+ * 其余任何 WM_CLOSE/WM_DESTROY 都被拒绝，taskkill 无法无 BSOD 结束 BgSrv。 */
+static BOOL      g_bAllowClose = FALSE;
+
+/* issue #5: Auxiliary 拦截计数通知 */
+static HANDLE    g_hAuxDriver = INVALID_HANDLE_VALUE;
+static ULONG     g_lastAuxBlockedCount = 0;
+
 /* 最新驱动状态缓存 */
 static GSH_LOCK_STATUS g_currentStatus = {0};
 
@@ -307,6 +316,29 @@ static BOOL QueryDriverStatus(VOID)
         }
     }
     return ok;
+}
+
+/* issue #5: 查询 Auxiliary 内核拦截计数，返回自上次以来的增量（>0 时调用方弹窗通知） */
+static ULONG QueryAuxBlockedDelta(VOID)
+{
+    if (g_hAuxDriver == INVALID_HANDLE_VALUE) {
+        g_hAuxDriver = CreateFileW(
+            AUX_WIN32_NAME,
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (g_hAuxDriver == INVALID_HANDLE_VALUE) return 0;
+    }
+    ULONG current = 0;
+    DWORD bytesReturned = 0;
+    if (!DeviceIoControl(g_hAuxDriver, IOCTL_AUX_GET_BLOCKED_COUNT,
+                         NULL, 0, &current, sizeof(current),
+                         &bytesReturned, NULL)) {
+        return 0;
+    }
+    ULONG delta = (current > g_lastAuxBlockedCount) ? (current - g_lastAuxBlockedCount) : 0;
+    g_lastAuxBlockedCount = current;
+    return delta;
 }
 
 /* ============================================================
@@ -416,6 +448,15 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 
         /* 首次查询 */
         QueryDriverStatus();
+
+        /* issue #5: 预打开 Auxiliary 设备用于拦截计数通知 */
+        if (g_hAuxDriver == INVALID_HANDLE_VALUE) {
+            g_hAuxDriver = CreateFileW(
+                AUX_WIN32_NAME,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        }
         break;
     }
 
@@ -430,12 +471,14 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
              */
             if (!driverOk && g_bDriverWasAvailable) {
                 OutputDebugStringW(L"[GSH BgSrv] Driver unloaded, exiting safely (removing CRITICAL flag).\n");
+                g_bAllowClose = TRUE;  /* issue #2: 标记为合法退出 */
                 SafeExitProcess(0);
                 return 0;  /* 不会到达 */
             }
             /* 客户端请求退出：先关闭驱动句柄（释放驱动引用），再安全退出 */
             if (driverOk && g_currentStatus.Reserved[0] == 1) {
                 OutputDebugStringW(L"[GSH BgSrv] Exit requested by client, closing driver handle and exiting.\n");
+                g_bAllowClose = TRUE;  /* issue #2: 标记为合法退出 */
                 if (g_hDriver != INVALID_HANDLE_VALUE) {
                     CloseHandle(g_hDriver);
                     g_hDriver = INVALID_HANDLE_VALUE;
@@ -458,6 +501,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     MB_ICONWARNING | MB_OK | MB_TOPMOST | MB_SETFOREGROUND);
             }
             g_lastLockState = g_currentStatus.LockState;
+
+            /* issue #5: Auxiliary 拦截计数增量检测：有新增拦截时弹窗通知 */
+            {
+                ULONG auxDelta = QueryAuxBlockedDelta();
+                if (auxDelta > 0) {
+                    WCHAR szMsg[192];
+                    swprintf_s(szMsg, ARRAYSIZE(szMsg),
+                        L"Auxiliary driver blocked %lu shutdown-related call(s) (NtShutdownSystem / NtTerminateProcess / NtUnloadDriver / NtInitiatePowerAction).",
+                        auxDelta);
+                    MessageBoxW(NULL, szMsg,
+                        L"Shutdown blocked by Auxiliary",
+                        MB_ICONWARNING | MB_OK | MB_TOPMOST | MB_SETFOREGROUND);
+                }
+            }
 
             InvalidateRect(hWnd, NULL, FALSE);
         }
@@ -514,6 +571,29 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         break;
     }
 
+    /* issue #5: 系统真实关机/注销（Auxiliary trampoline 已放行，系统才会走到这里）。
+     * 必须取消 Critical 并退出，否则系统因 Critical 进程存在而触发 CRITICAL_PROCESS_DIED。 */
+    case WM_QUERYENDSESSION:
+        return TRUE;
+
+    case WM_ENDSESSION:
+        if (wParam) {
+            OutputDebugStringW(L"[GSH BgSrv] Session ending, exiting safely.\n");
+            g_bAllowClose = TRUE;  /* issue #2: 系统关机属合法退出 */
+            SafeExitProcess(0);
+        }
+        return 0;
+
+    /* issue #2: 拒绝关闭窗口 - 除非经过合法退出路径置位 g_bAllowClose。
+     * taskkill（无 /f）发送 WM_CLOSE，这里直接吞掉；taskkill /f 会触发
+     * Critical 进程强杀保护（BSOD），同样无法"无 BSOD 结束"。 */
+    case WM_CLOSE:
+        if (!g_bAllowClose) {
+            OutputDebugStringW(L"[GSH BgSrv] WM_CLOSE rejected (close not allowed).\n");
+            return 0;
+        }
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+
     case WM_DESTROY:
         KillTimer(hWnd, TIMER_OVERLAY_ID);
         if (g_hFont) DeleteObject(g_hFont);
@@ -522,8 +602,20 @@ static LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             CloseHandle(g_hDriver);
             g_hDriver = INVALID_HANDLE_VALUE;
         }
-        /* 窗口被销毁时也必须取消 Critical，否则进程退出会蓝屏 */
-        SafeExitProcess(0);
+        if (g_bAllowClose) {
+            /* 窗口被销毁时也必须取消 Critical，否则进程退出会蓝屏 */
+            SafeExitProcess(0);
+        } else {
+            /* 未授权销毁（外力尝试关闭）：重建 overlay 窗口，维持保护 */
+            OutputDebugStringW(L"[GSH BgSrv] WM_DESTROY without allow-close, recreating overlay.\n");
+            g_hOverlayWnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                L"GSHOverlayWindow",
+                L"GlobalShutdownHook Status",
+                WS_POPUP | WS_VISIBLE,
+                g_overlayX, g_overlayY, OVERLAY_WIDTH, OVERLAY_HEIGHT,
+                NULL, NULL, g_hInst, NULL);
+        }
         break;
 
     default:
@@ -574,6 +666,14 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_COMMAND:
         /* 所有菜单选项都已禁用，不做任何处理 */
         break;
+
+    /* issue #2: 托盘窗口同样拒绝外部关闭请求 */
+    case WM_CLOSE:
+        if (!g_bAllowClose) {
+            OutputDebugStringW(L"[GSH BgSrv] Tray WM_CLOSE rejected (close not allowed).\n");
+            return 0;
+        }
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
 
     /* 禁止隐藏窗口 - 任何试图隐藏的操作都被拒绝 */
     case WM_SHOWWINDOW:

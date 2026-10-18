@@ -42,6 +42,7 @@ static NTSTATUS GshIoctlRmPass(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlShutdownNow(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlQueryLockStatus(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlRequestExit(PIRP Irp, PIO_STACK_LOCATION IrpSp);
+static NTSTATUS GshIoctlCheckQuitting(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 static NTSTATUS GshIoctlGetQueue(PIRP Irp, PIO_STACK_LOCATION IrpSp);
 
 /* ---- 驱动入口 ---- */
@@ -229,6 +230,9 @@ NTSTATUS GshDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             break;
         case IOCTL_GSH_REQUEST_EXIT:
             status = GshIoctlRequestExit(Irp, irpSp);
+            break;
+        case IOCTL_GSH_CHECK_QUITTING:
+            status = GshIoctlCheckQuitting(Irp, irpSp);
             break;
         default:
             status = STATUS_INVALID_DEVICE_REQUEST;
@@ -499,6 +503,22 @@ static NTSTATUS GshIoctlRequestExit(PIRP Irp, PIO_STACK_LOCATION IrpSp)
     UNREFERENCED_PARAMETER(IrpSp);
     g_ExitRequested = TRUE;
     DbgPrintEx(0, 0, "[GSH] Exit requested by client.\n");
+    Irp->IoStatus.Information = 0;
+    return STATUS_SUCCESS;
+}
+
+/* ---- IOCTL: CHECK_QUITTING（BgSrv 查询是否允许退出） ---- */
+static NTSTATUS GshIoctlCheckQuitting(PIRP Irp, PIO_STACK_LOCATION IrpSp)
+{
+    UNREFERENCED_PARAMETER(IrpSp);
+    if (Irp->AssociatedIrp.SystemBuffer &&
+        Irp->MdlAddress == NULL &&
+        IrpSp->Parameters.DeviceIoControl.OutputBufferLength >= sizeof(ULONG))
+    {
+        *(PULONG)Irp->AssociatedIrp.SystemBuffer = g_ExitRequested ? 1UL : 0UL;
+        Irp->IoStatus.Information = sizeof(ULONG);
+        return STATUS_SUCCESS;
+    }
     Irp->IoStatus.Information = 0;
     return STATUS_SUCCESS;
 }

@@ -38,6 +38,12 @@ static volatile bool g_Quitting = false;
 static PDEVICE_OBJECT g_DeviceObject = NULL;
 static UNICODE_STRING g_DosDeviceName;
 
+/* 关机放行 (shutdown_now trampoline, issue #5)
+ * 客户端在调用 ZwShutdownSystem 前先 ARM 本驱动，Fake 函数在时间窗内放行一次。 */
+static volatile LONG g_ShutdownPassthrough = 0; /* 剩余放行次数 */
+static LONGLONG g_ShutdownArmTime = 0;          /* KeQueryInterruptTime(), 100ns */
+#define AUX_ARM_TIMEOUT_NS (10LL * 1000 * 1000 * 1000) /* 10 秒 */
+
 /* 是否使用 syscall 号匹配 (当 MmGetSystemRoutineAddress 解析失败时启用) */
 static bool g_UseSyscallIndex = false;
 static ULONG g_SyscallUnload = 0;
@@ -141,19 +147,67 @@ static PWCHAR AuxFindSubstring(PWCHAR str, PWCHAR search)
 }
 
 /* ============================================================
- *  PPL 操作入口 (PPLControl 作为独立项目使用，这里留空 stub)
- *  独立项目: https://github.com/itm4n/PPLcontrol
+ *  PPL 保护 (issue #4: 原为 stub，现直接从内核实现)
+ *  从 PsIsProtectedProcess 机器码解析 Protection 字段偏移，
+ *  直接写入目标 EPROCESS 的 Protection/SignatureLevel/
+ *  SectionSignatureLevel，不再依赖外部 PPLcontrol.exe。
  * ============================================================ */
 
-static LONG g_OffsetActiveProcessLinks = 0x448; /* Win10 1903+ */
+static LONG g_OffsetProtection = -1;
+
+static LONG AuxFindProtectionOffset(void)
+{
+    UNICODE_STRING routineName;
+    RtlInitUnicodeString(&routineName, L"PsIsProtectedProcess");
+    PUCHAR pFunc = (PUCHAR)MmGetSystemRoutineAddress(&routineName);
+    if (!pFunc)
+        return -1;
+
+    /* PsIsProtectedProcess 在 x64 上的典型实现:
+     *   48 8B 81 <disp32>      mov rax, [rcx+disp32]
+     *   8B 81 <disp32>         mov eax, [rcx+disp32]
+     * 遍历前 64 字节找该模式。 */
+    for (ULONG i = 0; i < 64; i++)
+    {
+        if (pFunc[i] == 0x48 && pFunc[i + 1] == 0x8B && pFunc[i + 2] == 0x81)
+        {
+            return *(LONG *)(pFunc + i + 3);
+        }
+        if (pFunc[i] == 0x8B && pFunc[i + 1] == 0x81)
+        {
+            return *(LONG *)(pFunc + i + 2);
+        }
+    }
+    return -1;
+}
 
 static NTSTATUS AuxSetProcessProtection(HANDLE pid, UCHAR protectionLevel)
 {
-    UNREFERENCED_PARAMETER(pid);
-    UNREFERENCED_PARAMETER(protectionLevel);
-    DbgPrintEx(0, 0, "[Auxiliary] AuxSetProcessProtection: PPLControl is independent, use PPLControl.exe directly\n");
+    if (g_OffsetProtection < 0)
+        g_OffsetProtection = AuxFindProtectionOffset();
+    if (g_OffsetProtection < 0)
+    {
+        DbgPrintEx(0, 0, "[Auxiliary] AuxSetProcessProtection: cannot resolve Protection offset\n");
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    PEPROCESS pEProcess = NULL;
+    NTSTATUS status = PsLookupProcessByProcessId(pid, &pEProcess);
+    if (!NT_SUCCESS(status))
+        return status;
+
+    PUCHAR pProc = (PUCHAR)pEProcess;
+    pProc[g_OffsetProtection]     = protectionLevel; /* Protection   */
+    pProc[g_OffsetProtection + 1] = protectionLevel; /* SignatureLevel */
+    pProc[g_OffsetProtection + 2] = protectionLevel; /* SectionSignatureLevel */
+    ObDereferenceObject(pEProcess);
+
+    DbgPrintEx(0, 0, "[Auxiliary] SetProcessProtection PID=%p level=0x%X offset=%ld\n",
+               pid, protectionLevel, g_OffsetProtection);
     return STATUS_SUCCESS;
 }
+
+static LONG g_OffsetActiveProcessLinks = 0x448; /* Win10 1903+ */
 
 /* 保存被隐藏进程的原始链表指针，用于恢复 */
 static LIST_ENTRY g_HiddenProcessLinks;
@@ -317,7 +371,14 @@ static NTSTATUS NTAPI FakeNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS Exit
 
 static NTSTATUS NTAPI FakeNtShutdownSystem(ULONG ShutdownAction)
 {
-    UNREFERENCED_PARAMETER(ShutdownAction);
+    /* issue #5: shutdown_now trampoline - 客户端 ARM 后在时间窗内放行一次 */
+    if (g_ShutdownPassthrough > 0 &&
+        (KeQueryInterruptTime() - g_ShutdownArmTime) < AUX_ARM_TIMEOUT_NS)
+    {
+        InterlockedDecrement(&g_ShutdownPassthrough);
+        DbgPrintEx(0, 0, "[Auxiliary] NtShutdownSystem passthrough (trampoline)\n");
+        return ((NtShutdownSystem_t)g_OriginalNtShutdownSystem)(ShutdownAction);
+    }
     InterlockedIncrement(&g_BlockedCount);
     DbgPrintEx(0, 0, "[Auxiliary] Blocked NtShutdownSystem\n");
     return STATUS_ACCESS_DENIED;
@@ -329,10 +390,15 @@ static NTSTATUS NTAPI FakeNtInitiatePowerAction(
     ULONG Flags,
     BOOLEAN Asynchronous)
 {
-    UNREFERENCED_PARAMETER(Action);
-    UNREFERENCED_PARAMETER(MinSystemState);
-    UNREFERENCED_PARAMETER(Flags);
-    UNREFERENCED_PARAMETER(Asynchronous);
+    /* issue #5: 同样支持 shutdown_now trampoline */
+    if (g_ShutdownPassthrough > 0 &&
+        (KeQueryInterruptTime() - g_ShutdownArmTime) < AUX_ARM_TIMEOUT_NS)
+    {
+        InterlockedDecrement(&g_ShutdownPassthrough);
+        DbgPrintEx(0, 0, "[Auxiliary] NtInitiatePowerAction passthrough (trampoline)\n");
+        return ((NtInitiatePowerAction_t)g_OriginalNtInitiatePowerAction)(
+            Action, MinSystemState, Flags, Asynchronous);
+    }
     InterlockedIncrement(&g_BlockedCount);
     DbgPrintEx(0, 0, "[Auxiliary] Blocked NtInitiatePowerAction\n");
     return STATUS_ACCESS_DENIED;
@@ -404,6 +470,20 @@ void __fastcall InfinityCallback(unsigned long nCallIndex, PVOID *pSsdtAddress)
 
 static bool GetSyscallAddresses()
 {
+    /* issue #1: 优先使用 KiServiceTable index (syscall 号) 匹配。
+     * InfinityHook 的 nCallIndex 直接来自 KiServiceTable 下标，
+     * 比 MmGetSystemRoutineAddress 解析出的函数地址更可靠、跨版本更稳。 */
+    RTL_OSVERSIONINFOW osvi = {0};
+    osvi.dwOSVersionInfoSize = sizeof(osvi);
+    if (NT_SUCCESS(RtlGetVersion(&osvi)) && AuxLookupSyscallNumbers(osvi.dwBuildNumber))
+    {
+        g_UseSyscallIndex = true;
+        DbgPrintEx(0, 0, "[Auxiliary] Using KiServiceTable index matching (build %lu)\n", osvi.dwBuildNumber);
+        return true;
+    }
+
+    /* 回退: 地址匹配 (syscall 表无此 build 时) */
+    DbgPrintEx(0, 0, "[Auxiliary] No syscall lookup entry for this build, falling back to address matching\n");
     UNICODE_STRING str;
     ULONG resolvedCount = 0;
 
@@ -435,7 +515,7 @@ static bool GetSyscallAddresses()
         resolvedCount++;
     DbgPrintEx(0, 0, "[Auxiliary] NtInitiatePowerAction: %p\n", g_pNtInitiatePowerAction);
 
-    /* 如果全部解析成功，使用函数地址匹配 */
+    /* 全部解析成功才使用地址匹配 */
     if (resolvedCount == 4)
     {
         g_UseSyscallIndex = false;
@@ -443,27 +523,8 @@ static bool GetSyscallAddresses()
         return true;
     }
 
-    /* 部分或全部解析失败，回退到 syscall 号匹配 (从 nt-per-syscall.json) */
-    DbgPrintEx(0, 0, "[Auxiliary] Only %lu/4 addresses resolved, falling back to syscall index matching\n", resolvedCount);
-    g_UseSyscallIndex = true;
-
-    /* 获取当前系统 build number */
-    RTL_OSVERSIONINFOW osvi = {0};
-    osvi.dwOSVersionInfoSize = sizeof(osvi);
-    if (!NT_SUCCESS(RtlGetVersion(&osvi)))
-    {
-        DbgPrintEx(0, 0, "[Auxiliary] RtlGetVersion failed\n");
-        return false;
-    }
-
-    /* 从查找表获取 syscall 号 */
-    if (!AuxLookupSyscallNumbers(osvi.dwBuildNumber))
-    {
-        DbgPrintEx(0, 0, "[Auxiliary] No syscall lookup entry for build %lu\n", osvi.dwBuildNumber);
-        return false;
-    }
-
-    return true;
+    DbgPrintEx(0, 0, "[Auxiliary] Only %lu/4 addresses resolved, cannot match reliably\n", resolvedCount);
+    return false;
 }
 
 /* ============================================================
@@ -510,6 +571,12 @@ static NTSTATUS AuxIoctlDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
     case IOCTL_AUX_SET_QUITTING:
         g_Quitting = true;
         DbgPrintEx(0, 0, "[Auxiliary] QUITTING state set - all blocks disabled\n");
+        break;
+
+    case IOCTL_AUX_ARM_SHUTDOWN:
+        g_ShutdownArmTime = KeQueryInterruptTime();
+        InterlockedExchange(&g_ShutdownPassthrough, 2);
+        DbgPrintEx(0, 0, "[Auxiliary] Shutdown passthrough armed (2 attempts, 10s window)\n");
         break;
 
     case IOCTL_AUX_SET_PROTECTION:
